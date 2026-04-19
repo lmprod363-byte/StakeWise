@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-bg: #0A0B0E;
+  --color-surface: #15181F;
+  --color-border: #262B34;
+  --color-accent: #00FF95;
+  --color-accent-green: #00FF95;
+  --color-loss: #FF3E3E;
+  --color-refund: #FFB800;
+  --color-text-main: #FFFFFF;
+  --color-text-dim: #7C828D;
+}
+
+@layer base {
+  body {
+    @apply bg-bg text-text-main font-sans antialiased;
+  }
+}
+
+@layer components {
+  .stat-card {
+    @apply bg-surface p-6 rounded-xl border border-border;
+  }
+  
+  .glass-card {
+    @apply bg-surface border border-border rounded-xl overflow-hidden;
+  }
+}

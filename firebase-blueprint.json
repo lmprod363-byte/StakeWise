@@ -1,0 +1,47 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User configuration and bankroll settings",
+      "type": "object",
+      "properties": {
+        "total": { "type": "number", "description": "Total bankroll value" },
+        "unitSize": { "type": "number", "description": "Standard unit size" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["total", "unitSize"]
+    },
+    "Bet": {
+      "title": "Bet Record",
+      "description": "A single sports bet record",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user who owns this bet" },
+        "date": { "type": "string", "format": "date-time" },
+        "sport": { "type": "string" },
+        "event": { "type": "string" },
+        "market": { "type": "string" },
+        "selection": { "type": "string" },
+        "odds": { "type": "number" },
+        "stake": { "type": "number" },
+        "status": { "type": "string", "enum": ["pending", "won", "lost", "void", "cashout", "half_win", "half_loss"] },
+        "profit": { "type": "number" },
+        "cashoutValue": { "type": "number" },
+        "deleted": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "date", "sport", "event", "market", "selection", "odds", "stake", "status", "profit"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Stores user settings and bankroll totals"
+    },
+    "/bets/{betId}": {
+      "schema": "Bet",
+      "description": "Stores individual bet records with owner UID"
+    }
+  }
+}

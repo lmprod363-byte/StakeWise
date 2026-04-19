@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="StakeWise" />
+    <meta name="theme-color" content="#121214" />
+    <link rel="apple-touch-icon" href="https://ui-avatars.com/api/?name=S+W&background=0A0B0E&color=00FF95&size=180&bold=true&font-size=0.4" />
+    <link rel="manifest" href="/manifest.json?v=1.4.1" />
+    <title>StakeWise - Gestão de Apostas</title>
+    <script>
+      // Global fix for fetch getter-only error in certain environments
+      (function() {
+        var protect = function(obj) {
+          try {
+            var f = obj.fetch;
+            if (f && typeof f === 'function') {
+              Object.defineProperty(obj, 'fetch', {
+                configurable: true,
+                enumerable: true,
+                get: function() { return f; },
+                set: function(v) { console.warn('Fetch overwrite ignored on', obj === window ? 'window' : 'self'); }
+              });
+            }
+          } catch (e) {}
+        };
+        protect(window);
+        if (typeof self !== 'undefined') protect(self);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
