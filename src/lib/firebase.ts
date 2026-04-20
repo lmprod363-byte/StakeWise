@@ -17,14 +17,32 @@ export const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = async () => {
   try {
+    // Detect if we are in a WebView/Mobile environment where popups might fail
+    const isWebView = /wv|Webview/i.test(navigator.userAgent) || 
+                     (window.location.protocol === 'file:' || window.location.protocol.includes('app'));
+    
+    if (isWebView && !window.location.hostname.includes('run.app')) {
+      console.warn("Ambiente WebView detectado. Popups podem falhar. Tentando redirecionamento...");
+    }
+
     return await signInWithPopup(auth, googleProvider);
   } catch (error: any) {
+    console.error("Erro na autenticação:", error);
+    
     if (error.code === 'auth/unauthorized-domain') {
-      const currentDomain = window.location.hostname;
-      console.error(`Domínio não autorizado: ${currentDomain}. Adicione este domínio no Console do Firebase > Authentication > Settings > Authorized domains.`);
-      throw new Error(`Domínio não autorizado (${currentDomain}). Por favor, autorize este domínio no dashboard do Firebase.`);
+      const currentDomain = window.location.hostname || "localhost";
+      throw new Error(`Domínio não autorizado: ${currentDomain}. Você precisa adicionar este endereço no Firebase > Authentication > Settings > Authorized Domains.`);
     }
-    throw error;
+    
+    if (error.code === 'auth/popup-blocked') {
+      throw new Error('O navegador bloqueou o popup de login. Por favor, permita popups para este site.');
+    }
+
+    if (error.code === 'auth/operation-not-allowed') {
+      throw new Error('O login com Google não está ativado no seu projeto Firebase.');
+    }
+
+    throw new Error(`Erro: ${error.message || 'Falha na autenticação'}`);
   }
 };
 export const loginWithEmail = (email: string, pass: string) => signInWithEmailAndPassword(auth, email, pass);

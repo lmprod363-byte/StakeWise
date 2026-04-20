@@ -679,14 +679,17 @@ export default function App() {
                     await loginWithEmail(email, password);
                   }
                 } catch (err: any) {
-                  if (err.message.includes('auth/unauthorized-domain') || err.message.includes('domínio não autorizado')) {
-                    const domain = window.location.hostname;
-                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: ${domain}. Por favor, adicione este domínio no Console do Firebase > Authentication > Settings > Authorized domains.`);
+                  const errorCode = err.code || '';
+                  if (errorCode === 'auth/unauthorized-domain' || err.message.includes('domínio não autorizado')) {
+                    const domain = window.location.hostname || "local-dist-apk";
+                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: Adicione ${domain} no Console do Firebase.`);
+                  } else if (errorCode === 'auth/operation-not-allowed') {
+                    setAuthError("PROVEDOR DESATIVADO: Ative 'E-mail/Senha' no Firebase em Authentication > Sign-in method.");
                   } else {
-                    setAuthError(err.message.includes('auth/invalid-credential') ? 'Email ou senha incorretos.' : 
+                    setAuthError(err.message.includes('auth/invalid-credential') || err.message.includes('auth/wrong-password') ? 'Email ou senha incorretos.' : 
                                  err.message.includes('auth/email-already-in-use') ? 'Este email já está em uso.' : 
                                  err.message.includes('auth/weak-password') ? 'A senha deve ter pelo menos 6 caracteres.' :
-                                 'Erro na autenticação. Tente novamente.');
+                                 `Erro de Login (${errorCode}): ${err.message}`);
                   }
                 }
               }}
@@ -733,11 +736,16 @@ export default function App() {
                 try {
                   await signInWithGoogle();
                 } catch (err: any) {
-                  if (err.message.includes('auth/unauthorized-domain') || err.message.includes('domínio não autorizado')) {
-                    const domain = window.location.hostname;
-                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: ${domain}. Por favor, adicione este domínio no Console do Firebase > Authentication > Settings > Authorized domains.`);
+                  const errorCode = err.code || '';
+                  if (errorCode === 'auth/unauthorized-domain' || err.message.includes('domínio não autorizado')) {
+                    const domain = window.location.hostname || "local-dist-apk";
+                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: Este domínio (${domain}) deve ser adicionado no Console do Firebase > Authentication > Settings > Authorized Domains. Se estiver no APK, adicione o domínio do Netlify onde o app está hospedado.`);
+                  } else if (errorCode === 'auth/operation-not-allowed') {
+                    setAuthError("PROVEDOR DESATIVADO: Você precisa ativar o 'Google Login' e 'Email/Password' no Console do Firebase em Authentication > Sign-in method.");
+                  } else if (errorCode === 'auth/popup-blocked') {
+                    setAuthError("POPUP BLOQUEADO: O navegador ou WebView bloqueou a janela de login. Tente usar o login por Email.");
                   } else {
-                    setAuthError(err.message);
+                    setAuthError(`ERRO DE LOGIN (${errorCode}): ${err.message}`);
                   }
                 }
               }}
