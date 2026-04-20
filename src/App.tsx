@@ -9,6 +9,7 @@ import {
   Filter, 
   Settings2,
   Trash2,
+  Save,
   CheckCircle2,
   XCircle,
   HelpCircle,
@@ -604,7 +605,8 @@ export default function App() {
     
     return {
       totalProfit,
-      totalPendingStakes,
+      pendingCount: pendingBets.length,
+      pendingStake: totalPendingStakes,
       currentBalance: bankroll.total + totalProfit - totalPendingStakes
     };
   }, [bets, bankroll.total]);
@@ -1140,7 +1142,14 @@ export default function App() {
         </nav>
 
         <div className="pt-6 space-y-4">
-          <div className="bg-surface rounded-xl p-6 border border-border">
+          <div className="bg-surface rounded-xl p-6 border border-border group relative">
+            <button 
+              onClick={() => setActiveTab('settings')}
+              className="absolute top-4 right-4 p-2 text-text-dim hover:text-accent hover:bg-accent/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+              title="Gerenciar Banca"
+            >
+              <Settings2 className="w-4 h-4" />
+            </button>
             <p className="text-text-dim text-[10px] font-black uppercase tracking-widest mb-2">Banca Atual</p>
             <p className="text-text-main text-2xl font-extrabold tracking-tight">
               {formatCurrency(allTimeStats.currentBalance)}
@@ -1217,7 +1226,16 @@ export default function App() {
 
         <div className="p-4 md:p-10 max-w-7xl mx-auto min-h-[calc(100vh-6rem)]">
           {activeTab === 'dashboard' && (
-            <div className="space-y-8">
+            <motion.div 
+              key={`dashboard-${activeBankrollId}`}
+              initial={{ opacity: 0, x: -30, scale: 0.98 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              transition={{ 
+                duration: 0.5, 
+                ease: [0.23, 1, 0.32, 1] 
+              }}
+              className="space-y-8"
+            >
               {/* Range Selectors */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
@@ -1251,6 +1269,36 @@ export default function App() {
                 <StatsCard title="Taxa de Acerto" value={`${stats.winRate.toFixed(1)}%`} icon={<History />} />
                 <StatsCard title="ROI" value={`${stats.roi.toFixed(1)}%`} icon={<TrendingUp />} />
                 <StatsCard title="Lucro em Unidades" value={`${stats.unitsWon.toFixed(1)}u`} icon={<Target />} />
+              </div>
+
+              {/* Pending Bets Summary */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="glass-card p-6 border-amber-500/20 bg-amber-500/5 flex items-center justify-between group overflow-hidden relative">
+                   <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
+                   <div className="relative z-10">
+                      <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-amber-500/60 mb-2">Apostas Pendentes</h3>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-black tracking-tighter text-text-main line-height-none">{allTimeStats.pendingCount}</span>
+                        <span className="text-[10px] font-black uppercase tracking-widest text-text-dim">Entradas em andamento</span>
+                      </div>
+                   </div>
+                   <div className="bg-amber-500/10 p-3 rounded-xl border border-amber-500/20 group-hover:scale-110 transition-transform relative z-10">
+                      <Clock className="w-5 h-5 text-amber-500" />
+                   </div>
+                </div>
+
+                <div className="glass-card p-6 border-indigo-500/20 bg-indigo-500/5 flex items-center justify-between group overflow-hidden relative">
+                   <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
+                   <div className="relative z-10">
+                      <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-500/60 mb-2">Total Comprometido</h3>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-3xl font-black tracking-tighter text-text-main line-height-none">{formatCurrency(allTimeStats.pendingStake)}</span>
+                      </div>
+                   </div>
+                   <div className="bg-indigo-500/10 p-3 rounded-xl border border-indigo-500/20 group-hover:scale-110 transition-transform relative z-10">
+                      <DollarSign className="w-5 h-5 text-indigo-500" />
+                   </div>
+                </div>
               </div>
 
               {/* Chart Section */}
@@ -1321,7 +1369,7 @@ export default function App() {
                   )}
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
 
           {activeTab === 'register' && (
@@ -1334,7 +1382,7 @@ export default function App() {
                   <div className="lg:col-span-12">
                      <div 
                         className={cn(
-                           "glass-card p-12 border-dashed border-2 flex flex-col items-center justify-center text-center group cursor-pointer hover:border-accent transition-all relative overflow-hidden",
+                           "glass-card p-12 border-dashed border-2 flex flex-col items-center justify-center text-center group cursor-pointer hover:border-accent transition-all relative overflow-hidden backdrop-blur-xl bg-white/[0.03]",
                            isScanning ? "border-accent opacity-80" : "border-border"
                         )}
                         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -1404,7 +1452,7 @@ export default function App() {
                         } else {
                            addBet(betData);
                         }
-                     }} className="glass-card p-8 space-y-8 relative overflow-hidden">
+                     }} className="glass-card p-8 space-y-8 relative overflow-hidden backdrop-blur-2xl bg-white/[0.02] border-white/5">
                         {isScanning && (
                            <div className="absolute inset-0 z-20 bg-bg/40 backdrop-blur-[2px] cursor-wait flex items-center justify-center">
                               <div className="flex flex-col items-center gap-4">
@@ -1621,7 +1669,16 @@ export default function App() {
           )}
 
           {activeTab === 'bets' && (
-            <div className="space-y-6">
+            <motion.div 
+              key={`history-${activeBankrollId}`}
+              initial={{ opacity: 0, x: 30, scale: 0.98 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              transition={{ 
+                duration: 0.5, 
+                ease: [0.23, 1, 0.32, 1] 
+              }}
+              className="space-y-6"
+            >
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="relative w-full lg:max-w-sm">
                   <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
@@ -1719,8 +1776,8 @@ export default function App() {
                       >
                         <div className="flex items-center gap-3">
                           <div className={cn(
-                            "w-10 h-10 rounded-xl border flex items-center justify-center font-black text-xs transition-all",
-                            isCollapsed ? "bg-bg border-border text-text-dim" : "bg-surface border-accent text-accent"
+                            "w-10 h-10 rounded-xl border flex items-center justify-center font-black text-xs transition-all backdrop-blur-md",
+                            isCollapsed ? "bg-white/[0.02] border-white/5 text-text-dim" : "bg-accent/10 border-accent/40 text-accent shadow-[0_0_15px_rgba(0,255,149,0.1)]"
                           )}>
                             {format(safeNewDate(date + 'T00:00:00'), 'dd')}
                           </div>
@@ -1731,6 +1788,9 @@ export default function App() {
                                  isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
                                  format(safeNewDate(date + 'T00:00:00'), "EEEE, dd 'de' MMMM", { locale: ptBR })}
                               </h3>
+                              <span className="hidden md:inline-flex items-center justify-center bg-accent/10 text-accent px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest leading-none shadow-[0_0_15px_rgba(0,255,149,0.1)] border border-accent/20 backdrop-blur-md">
+                                {group.bets.length} {group.bets.length === 1 ? 'entrada' : 'entradas'}
+                              </span>
                               {isCollapsed ? (
                                 <ChevronRight className="w-3 h-3 text-white/20" />
                               ) : (
@@ -1764,19 +1824,21 @@ export default function App() {
                         </div>
                       </div>
 
-                      <AnimatePresence>
+                      <AnimatePresence initial={false}>
                         {!isCollapsed && (
                           <motion.div 
                             initial={{ height: 0, opacity: 0 }}
                             animate={{ height: "auto", opacity: 1 }}
                             exit={{ height: 0, opacity: 0 }}
-                            className="glass-card overflow-hidden border-none bg-transparent"
+                            transition={{ duration: 0.4, ease: "easeInOut" }}
+                            className="overflow-hidden"
                           >
+                            <div className="glass-card overflow-hidden border-none bg-transparent pt-2">
                             <div className="overflow-x-auto hidden md:block px-1">
-                              <table className="w-full text-left border-collapse">
+                              <table className="w-full text-left border-separate border-spacing-y-3">
                                 <thead>
-                                  <tr className="bg-surface/30 border-b border-border/50">
-                                    <th className="px-6 py-5 w-10">
+                                  <tr className="text-text-dim/50">
+                                    <th className="px-6 py-2 w-10">
                                       <button 
                                         onClick={(e) => {
                                           e.stopPropagation();
@@ -1791,48 +1853,53 @@ export default function App() {
                                         )}
                                       </button>
                                     </th>
-                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em]">Detalhes da Aposta</th>
-                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Stake</th>
-                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Odd</th>
-                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
-                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Ações</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em]">Detalhes da Aposta</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-center">Unidades</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-center">Odd</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-right">Ações Rápidas</th>
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-border/30">
+                                <tbody>
                                   <AnimatePresence mode="popLayout">
                                     {group.bets.map((bet: Bet) => (
                                       <motion.tr 
                                         key={bet.id} 
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        className={cn(
-                                          "hover:bg-accent/[0.02] transition-colors group relative border-l-2 border-transparent",
-                                          bet.status === 'won' || bet.status === 'half_win' ? "hover:border-accent" : 
-                                          bet.status === 'lost' || bet.status === 'half_loss' ? "hover:border-loss" : 
-                                          bet.status === 'void' ? "hover:border-refund" : "",
-                                          selectedBetIds.has(bet.id) && "bg-accent/[0.05]"
+                                        initial={{ opacity: 0, y: 10 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, scale: 0.95 }}
+                                         className={cn(
+                                           "bg-bg/90 backdrop-blur-xl border-2 transition-all duration-500 rounded-3xl overflow-hidden group relative mb-4 hover:scale-[1.005] hover:shadow-2xl hover:shadow-indigo-500/5",
+                                           bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
+                                           bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
+                                           bet.status === 'void' ? "border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : "border-border/60 bg-surface/40",
+                                           bet.status !== 'pending' && "border-4",
+                                           selectedBetIds.has(bet.id) ? "ring-2 ring-accent border-accent" : ""
                                         )}
                                       >
-                                        <td className="px-6 py-4">
-                                           <button 
-                                             onClick={() => toggleSelectBet(bet.id)}
-                                             className="text-text-dim hover:text-accent transition-colors"
-                                           >
-                                             {selectedBetIds.has(bet.id) ? (
-                                               <CheckSquare className="w-4 h-4 text-accent" />
-                                             ) : (
-                                               <Square className="w-4 h-4" />
-                                             )}
-                                           </button>
+                                        <td className="px-6 py-5 rounded-l-3xl relative overflow-hidden">
+                                           {/* Designer ambient highlight */}
+                                           <div className="absolute top-0 left-0 w-24 h-24 bg-indigo-500/5 blur-[40px] rounded-full -translate-x-12 -translate-y-12" />
+                                           <div className="relative z-10">
+                                              <button 
+                                                onClick={() => toggleSelectBet(bet.id)}
+                                                className="text-text-dim hover:text-accent transition-colors"
+                                              >
+                                                {selectedBetIds.has(bet.id) ? (
+                                                  <CheckSquare className="w-5 h-5 text-accent" />
+                                                ) : (
+                                                  <Square className="w-5 h-5 opacity-20" />
+                                                )}
+                                              </button>
+                                           </div>
                                         </td>
-                                        <td className="px-6 py-4">
+                                        <td className="px-6 py-5">
                                           <div className="flex items-start gap-3">
                                             <div className={cn(
-                                              "w-1 h-10 rounded-full",
-                                              (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent" : 
-                                              (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss" : 
-                                              bet.status === 'void' ? "bg-refund" : "bg-text-dim/20"
+                                              "w-1 h-10 rounded-full shadow-[0_0_10px_currentColor]",
+                                              (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent text-accent" : 
+                                              (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss text-loss" : 
+                                              bet.status === 'void' ? "bg-refund text-refund" : "bg-text-dim/20 text-transparent"
                                             )} />
                                             <div>
                                               <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
@@ -1842,13 +1909,13 @@ export default function App() {
                                                   isSyncing={bet.id === syncingBetId} 
                                                 />
                                               </div>
-                                              <div className="text-[10px] text-text-dim font-bold uppercase mt-1 tracking-wider opacity-60">
+                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80">
                                                 {format(safeNewDate(bet.date), "HH:mm")} • {bet.event} • {bet.market}
                                               </div>
                                             </div>
                                           </div>
                                         </td>
-                                        <td className="px-6 py-4 font-bold text-sm text-center">
+                                        <td className="px-6 py-5 font-bold text-sm text-center">
                                           <div className="flex flex-col items-center">
                                             <span className="font-mono text-text-main">{(bet.stake / bankroll.unitSize).toFixed(2)}u</span>
                                             <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest leading-none mt-1">
@@ -1856,8 +1923,8 @@ export default function App() {
                                             </span>
                                           </div>
                                         </td>
-                                        <td className="px-6 py-4 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
-                                        <td className="px-6 py-4 text-right">
+                                        <td className="px-6 py-5 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
+                                        <td className="px-6 py-5 text-right">
                                           <div className={cn(
                                             "font-black text-sm font-mono",
                                             (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
@@ -1867,7 +1934,7 @@ export default function App() {
                                             {bet.status === 'pending' ? <span className="opacity-30">Pendente</span> : (bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
                                           </div>
                                         </td>
-                                        <td className="px-6 py-4 text-right">
+                                        <td className="px-6 py-5 rounded-r-2xl text-right">
                                           <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
                                               <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
                                                 <button 
@@ -1974,26 +2041,32 @@ export default function App() {
                                 </tbody>
                               </table>
                             </div>
+                            </div>
 
                             {/* Mobile Card View */}
-                            <div className="md:hidden space-y-4 px-2">
+                            <div className="md:hidden space-y-6 px-2 mt-4">
                               {group.bets.map((bet: Bet) => (
-                                <div 
+                                <motion.div 
+                                  layout
+                                  initial={{ opacity: 0, y: 10 }}
+                                  animate={{ opacity: 1, y: 0 }}
                                   key={bet.id}
                                   className={cn(
-                                    "bg-surface border-l-4 p-5 rounded-2xl space-y-4 shadow-sm",
-                                    bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-accent/5" : 
-                                    bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-loss/5" : 
-                                    bet.status === 'void' ? "border-refund/50" : "border-border",
-                                    selectedBetIds.has(bet.id) && "ring-2 ring-accent/20"
+                                    "bg-bg/90 backdrop-blur-2xl border-2 p-6 rounded-[32px] space-y-4 shadow-2xl transition-all duration-500 active:scale-[0.99] relative overflow-hidden mb-6",
+                                    (bet.status === 'won' || bet.status === 'half_win') ? "border-accent border-4 shadow-[0_0_15px_rgba(0,255,149,0.2)] bg-accent/[0.01]" : 
+                                    (bet.status === 'lost' || bet.status === 'half_loss') ? "border-loss border-4 shadow-[0_0_15px_rgba(255,62,62,0.2)] bg-loss/[0.01]" : 
+                                    bet.status === 'void' ? "border-refund border-4 shadow-[0_0_15px_rgba(255,184,0,0.2)] bg-refund/[0.01]" : "border-border/60 bg-surface/40",
+                                    selectedBetIds.has(bet.id) && "ring-2 ring-accent border-accent"
                                   )}
                                 >
+                                   {/* Designer ambient highlight */}
+                                   <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
                                    <div className="flex justify-between items-start mb-2">
                                       <div className="flex items-center gap-3">
                                         <button onClick={() => toggleSelectBet(bet.id)} className="transition-transform active:scale-90">
                                            {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
                                         </button>
-                                        <span className="text-[10px] font-black uppercase tracking-widest text-text-dim bg-bg px-2 py-1 rounded">
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-text-main bg-bg px-2 py-1 rounded border border-border/20">
                                           {format(safeNewDate(bet.date), "HH:mm")}
                                         </span>
                                       </div>
@@ -2069,7 +2142,7 @@ export default function App() {
                                         <button onClick={() => deleteBet(bet.id)} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><Trash2 className="w-4 h-4" /></button>
                                       </div>
                                    </div>
-                                </div>
+                                </motion.div>
                               ))}
                             </div>
                           </motion.div>
@@ -2088,7 +2161,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-            </div>
+            </motion.div>
           )}
 
           {activeTab === 'trash' && (
@@ -2207,9 +2280,30 @@ export default function App() {
                     </div>
                 </div>
 
-                <div className="glass-card p-6">
-                    <h3 className="text-lg font-black uppercase tracking-tighter mb-6">Configuração da Banca: <span className="text-accent underline">{bankroll.name}</span></h3>
+                <div className="glass-card p-6 border-indigo-500/20 shadow-[0_0_40px_rgba(99,102,241,0.05)]">
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-lg font-black uppercase tracking-tighter">Configuração da Banca</h3>
+                      <button 
+                        onClick={saveLocalSettings}
+                        className="bg-accent text-bg px-5 py-2 rounded-xl font-black uppercase text-[10px] tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-accent/20 flex items-center gap-2"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        Salvar Alterações
+                      </button>
+                    </div>
+
                     <div className="space-y-6">
+                        <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Nome da Banca</label>
+                            <input 
+                                type="text"
+                                value={bankroll.name}
+                                onChange={(e) => saveBankroll({ ...bankroll, name: e.target.value })}
+                                className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                placeholder="Altere o nome da sua banca..."
+                            />
+                        </div>
+
                         <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Banca Inicial</label>
                             <div className="relative">
@@ -2219,7 +2313,6 @@ export default function App() {
                                     inputMode="decimal"
                                     value={localTotal}
                                     onChange={(e) => setLocalTotal(e.target.value)}
-                                    onBlur={saveLocalSettings}
                                     className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
                                 />
                             </div>
@@ -2234,7 +2327,6 @@ export default function App() {
                                     inputMode="decimal"
                                     value={localUnit}
                                     onChange={(e) => setLocalUnit(e.target.value)}
-                                    onBlur={saveLocalSettings}
                                     className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
                                 />
                             </div>
@@ -2280,7 +2372,7 @@ export default function App() {
                                         onClick={() => saveBankroll({ ...bankroll, unitSize: value })}
                                         className="w-full py-2 bg-surface text-[9px] font-black uppercase tracking-widest text-text-main rounded border border-border hover:border-accent hover:text-accent transition-all"
                                     >
-                                        Selecionar
+                                        Salvar como Unidade
                                     </button>
                                 </div>
                             );
