@@ -27,7 +27,9 @@ import {
   RotateCcw,
   Share,
   Copy,
+  Zap,
   ChevronRight,
+  ChevronDown,
   Check,
   X
 } from 'lucide-react';
@@ -56,6 +58,7 @@ import {
   orderBy,
   serverTimestamp,
   getDoc,
+  getDocs,
   getDocFromServer
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
@@ -68,8 +71,21 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [bets, setBets] = useState<Bet[]>([]);
-  const [bankroll, setBankroll] = useState<Bankroll>({ total: 1000, unitSize: 20 });
+  const [bankrolls, setBankrolls] = useState<Bankroll[]>([]);
+  const [activeBankrollId, setActiveBankrollId] = useState<string | null>(localStorage.getItem('STAKEWISE_ACTIVE_BANKROLL_ID'));
   const [loading, setLoading] = useState(true);
+  const [bankrollsLoading, setBankrollsLoading] = useState(true);
+
+  const bankroll = useMemo(() => {
+    return bankrolls.find(b => b.id === activeBankrollId) || bankrolls[0] || { id: 'default', name: 'Principal', total: 1000, unitSize: 20, userId: '', createdAt: null };
+  }, [bankrolls, activeBankrollId]);
+
+  useEffect(() => {
+    if (bankroll.id !== 'default' && bankroll.id !== activeBankrollId) {
+      setActiveBankrollId(bankroll.id);
+      localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', bankroll.id);
+    }
+  }, [bankroll.id, activeBankrollId]);
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash'>('dashboard');
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('all');
@@ -97,6 +113,10 @@ export default function App() {
   const [localActualBalance, setLocalActualBalance] = useState('');
   const [showAllPercentages, setShowAllPercentages] = useState(false);
   const [manualAiKey, setManualAiKey] = useState(localStorage.getItem('STAKEWISE_CUSTOM_GEMINI_KEY') || '');
+  const [isAddingBankroll, setIsAddingBankroll] = useState(false);
+  const [newBankrollName, setNewBankrollName] = useState('');
+  const [newBankrollTotal, setNewBankrollTotal] = useState('1000');
+  const [newBankrollUnit, setNewBankrollUnit] = useState('20');
 
   // AI Scanning State
   const [isScanning, setIsScanning] = useState(false);
@@ -106,6 +126,16 @@ export default function App() {
   const [successToast, setSuccessToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
   const [cashoutBetId, setCashoutBetId] = useState<string | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState("");
+  const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
+
+  const toggleDateCollapse = (date: string) => {
+    setCollapsedDates(prev => {
+      const next = new Set(prev);
+      if (next.has(date)) next.delete(date);
+      else next.add(date);
+      return next;
+    });
+  };
 
   const showToast = (message: string, type: 'success' | 'info' = 'success') => {
     setSuccessToast({ message, type });
@@ -141,7 +171,7 @@ export default function App() {
     });
   }, []);
 
-  // Sync Data Effect
+  // Effect 1: Sync Bankrolls & Migration
   useEffect(() => {
     async function testConnection() {
       try {
@@ -155,6 +185,86 @@ export default function App() {
     testConnection();
 
     if (!user) {
+      setBankrolls([]);
+      setBankrollsLoading(false);
+      return;
+    }
+
+    const bankrollsQuery = query(
+      collection(db, 'bankrolls'),
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'asc')
+    );
+
+    const unsubscribeBankrolls = onSnapshot(bankrollsQuery, async (snapshot) => {
+      const list = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      })) as Bankroll[];
+
+      if (list.length === 0) {
+        if (localStorage.getItem(`MIGRATING_${user.uid}`)) return;
+        localStorage.setItem(`MIGRATING_${user.uid}`, 'true');
+
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const userData = userDoc.exists() ? userDoc.data() : { total: 1000, unitSize: 20 };
+        
+        try {
+          const newBankrollRef = await addDoc(collection(db, 'bankrolls'), {
+            name: 'Principal',
+            total: userData.total ?? 1000,
+            unitSize: userData.unitSize ?? 20,
+            userId: user.uid,
+            createdAt: serverTimestamp()
+          });
+
+          setActiveBankrollId(newBankrollRef.id);
+          localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', newBankrollRef.id);
+          
+          const allBetsRef = collection(db, 'bets');
+          const legacyBetsQuery = query(allBetsRef, where('userId', '==', user.uid));
+          const legacyBetsSnap = await getDocs(legacyBetsQuery);
+          
+          const { writeBatch } = await import('firebase/firestore');
+          let batch = writeBatch(db);
+          let count = 0;
+
+          for (const betDoc of legacyBetsSnap.docs) {
+            if (!betDoc.data().bankrollId) {
+              batch.update(doc(db, 'bets', betDoc.id), { bankrollId: newBankrollRef.id });
+              count++;
+              if (count === 499) {
+                await batch.commit();
+                batch = writeBatch(db);
+                count = 0;
+              }
+            }
+          }
+          if (count > 0) await batch.commit();
+          localStorage.removeItem(`MIGRATING_${user.uid}`);
+        } catch (err) {
+          console.error("Erro na migração:", err);
+          localStorage.removeItem(`MIGRATING_${user.uid}`);
+        }
+      } else {
+        setBankrolls(list);
+        // Ensure we have an active bankroll
+        const storedId = localStorage.getItem('STAKEWISE_ACTIVE_BANKROLL_ID');
+        if (!activeBankrollId || !list.find(b => b.id === activeBankrollId)) {
+          const targetId = list.find(b => b.id === storedId) ? storedId! : list[0].id;
+          setActiveBankrollId(targetId);
+          localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', targetId);
+        }
+      }
+      setBankrollsLoading(false);
+    });
+
+    return () => unsubscribeBankrolls();
+  }, [user]);
+
+  // Effect 2: Sync Bets (Depends on Bankrolls and Active ID)
+  useEffect(() => {
+    if (!user) {
       setBets([]);
       setLoading(false);
       return;
@@ -162,7 +272,6 @@ export default function App() {
 
     setLoading(true);
 
-    // Sync Bets
     const betsQuery = query(
       collection(db, 'bets'),
       where('userId', '==', user.uid),
@@ -170,39 +279,26 @@ export default function App() {
     );
 
     const unsubscribeBets = onSnapshot(betsQuery, (snapshot) => {
-      const betsList = snapshot.docs.map(doc => ({
+      const allBets = snapshot.docs.map(doc => ({
         ...doc.data(),
         id: doc.id
       })) as Bet[];
-      setBets(betsList);
+
+      const firstBankrollId = bankrolls[0]?.id;
+      const filtered = allBets.filter(bet => {
+        if (!bet.bankrollId) {
+          // Orphaned bets belong to first bankroll
+          return !activeBankrollId || activeBankrollId === firstBankrollId || activeBankrollId === 'default';
+        }
+        return bet.bankrollId === activeBankrollId;
+      });
+
+      setBets(filtered);
       setLoading(false);
     });
 
-    // Sync Bankroll/Settings
-    const userDocRef = doc(db, 'users', user.uid);
-    const unsubscribeUser = onSnapshot(userDocRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        const bTotal = data.total ?? 1000;
-        const bUnit = data.unitSize ?? 20;
-        setBankroll({
-          total: bTotal,
-          unitSize: bUnit
-        });
-        // Initial sync of local state
-        setLocalTotal(prev => (prev === '' ? bTotal.toString() : prev));
-        setLocalUnit(prev => (prev === '' ? bUnit.toString() : prev));
-      } else {
-        // Init default settings if first time
-        setDoc(userDocRef, { total: 1000, unitSize: 20, updatedAt: serverTimestamp() });
-      }
-    });
-
-    return () => {
-      unsubscribeBets();
-      unsubscribeUser();
-    };
-  }, [user]);
+    return () => unsubscribeBets();
+  }, [user, activeBankrollId, bankrolls]);
 
   const saveLocalSettings = () => {
     const total = parseFloat(localTotal) || bankroll.total;
@@ -348,6 +444,7 @@ export default function App() {
 
         const betData = {
           userId: user?.uid || '',
+          bankrollId: activeBankrollId || '',
           date: data.date ? safeNewDate(data.date).toISOString() : new Date().toISOString(),
           sport: data.sport || 'Futebol',
           event: data.event || '',
@@ -550,6 +647,7 @@ export default function App() {
       await addDoc(collection(db, 'bets'), {
         ...newBet,
         userId: user.uid,
+        bankrollId: activeBankrollId,
         profit,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -595,18 +693,24 @@ export default function App() {
         deleted: false,
         updatedAt: serverTimestamp()
       });
-    } catch (error) {
+      showToast("Aposta restaurada com sucesso!", "success");
+    } catch (error: any) {
       console.error("Erro ao restaurar aposta:", error);
+      alert("Erro ao restaurar: " + error.message);
     }
   };
 
+  const [betToDelete, setBetToDelete] = useState<string | null>(null);
+
   const permanentlyDeleteBet = async (id: string) => {
-    if (!user) return;
-    if (!confirm("Deseja excluir permanentemente? Esta ação não pode ser desfeita.")) return;
+    if (!user || !id) return;
     try {
       await deleteDoc(doc(db, 'bets', id));
-    } catch (error) {
+      setBetToDelete(null);
+      showToast("Aposta excluída permanentemente!", "info");
+    } catch (error: any) {
       console.error("Erro ao excluir permanentemente:", error);
+      alert("Erro ao excluir: " + (error.code || error.message));
     }
   };
 
@@ -725,7 +829,7 @@ export default function App() {
   };
 
   const updateStatus = async (id: string, status: Bet['status'], cashoutValue?: number) => {
-    if (!user) return;
+    if (!user || !activeBankrollId) return;
     const bet = bets.find(b => b.id === id);
     if (!bet) return;
 
@@ -734,7 +838,8 @@ export default function App() {
       const data: any = {
         status,
         profit: calculateProfit(bet.stake, bet.odds, status, finalCashout),
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        bankrollId: bet.bankrollId || activeBankrollId
       };
       if (cashoutValue !== undefined) data.cashoutValue = cashoutValue;
 
@@ -744,15 +849,58 @@ export default function App() {
     }
   };
 
-  const saveBankroll = async (newBankroll: Bankroll) => {
-    if (!user) return;
+  const saveBankroll = async (data: Partial<Bankroll>) => {
+    if (!user || !activeBankrollId) return;
     try {
-      await setDoc(doc(db, 'users', user.uid), {
-        ...newBankroll,
+      await updateDoc(doc(db, 'bankrolls', activeBankrollId), {
+        ...data,
         updatedAt: serverTimestamp()
       });
     } catch (error) {
       console.error("Erro ao salvar configurações:", error);
+    }
+  };
+
+  const addBankroll = async (name: string, total: number, unitSize: number) => {
+    if (!user) return;
+    try {
+      const docRef = await addDoc(collection(db, 'bankrolls'), {
+        name,
+        total,
+        unitSize,
+        userId: user.uid,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+      setActiveBankrollId(docRef.id);
+      localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', docRef.id);
+      showToast("Nova banca criada com sucesso!");
+    } catch (error) {
+      console.error("Erro ao adicionar banca:", error);
+    }
+  };
+
+  const deleteBankroll = async (id: string) => {
+    if (!user || bankrolls.length <= 1) {
+      alert("Você deve ter pelo menos uma banca.");
+      return;
+    }
+    if (!window.confirm("Deseja realmente excluir esta banca e todas as suas apostas? Esta ação é irreversível.")) return;
+    
+    try {
+      const betsToDelete = bets.filter(b => b.bankrollId === id);
+      for (const bet of betsToDelete) {
+        await deleteDoc(doc(db, 'bets', bet.id));
+      }
+      await deleteDoc(doc(db, 'bankrolls', id));
+      const other = bankrolls.find(b => b.id !== id);
+      if (other) {
+        setActiveBankrollId(other.id);
+        localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', other.id);
+      }
+      showToast("Banca excluída com sucesso!", "info");
+    } catch (error) {
+      console.error("Erro ao excluir banca:", error);
     }
   };
 
@@ -771,7 +919,7 @@ export default function App() {
           <div className="p-8 border-b border-border text-center">
             <div className="text-accent font-black text-4xl tracking-tighter mb-2 uppercase">StakeWise.</div>
             <p className="text-text-dim text-[10px] font-black uppercase tracking-widest leading-relaxed">
-              Gestão de banca na nuvem v1.4.6
+              Gestão de banca na nuvem v1.4.9
             </p>
           </div>
 
@@ -913,6 +1061,22 @@ export default function App() {
         </div>
 
         <nav className="space-y-4 flex-1">
+          <div className="mb-6">
+             <p className="text-[10px] font-black uppercase tracking-widest text-text-dim px-2 mb-2">Banca Ativa</p>
+             <select 
+               value={activeBankrollId || ''} 
+               onChange={(e) => {
+                 setActiveBankrollId(e.target.value);
+                 localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', e.target.value);
+               }}
+               className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-sm font-bold text-text-main focus:outline-none focus:border-accent appearance-none cursor-pointer"
+             >
+               {bankrolls.map(b => (
+                 <option key={b.id} value={b.id}>{b.name}</option>
+               ))}
+             </select>
+          </div>
+          
           <button 
             onClick={() => setActiveTab('dashboard')}
             className={cn(
@@ -994,33 +1158,44 @@ export default function App() {
       </aside>
 
       {/* Mobile Header */}
-      <div className="lg:hidden h-16 bg-bg border-b border-border flex items-center justify-between px-6 sticky top-0 z-20">
-        <div className="flex flex-col">
-            <div className="text-accent font-black text-lg tracking-tighter uppercase leading-none">
-              BetStrat.
+      <div className="lg:hidden h-20 bg-bg border-b border-border flex flex-col justify-center px-6 sticky top-0 z-20">
+        <div className="flex items-center justify-between w-full">
+            <div className="flex flex-col">
+                <div className="text-accent font-black text-lg tracking-tighter uppercase leading-none">
+                  BetStrat.
+                </div>
+                <select 
+                    value={activeBankrollId || ''} 
+                    onChange={(e) => {
+                        setActiveBankrollId(e.target.value);
+                        localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', e.target.value);
+                    }}
+                    className="bg-transparent border-none p-0 text-[10px] font-black uppercase tracking-widest text-text-dim mt-1 focus:ring-0 cursor-pointer"
+                >
+                    {bankrolls.map(b => (
+                        <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                </select>
             </div>
-            <span className="text-[8px] font-black uppercase tracking-widest text-text-dim mt-1">
-                {activeTab === 'dashboard' ? 'Dashboard' : activeTab === 'bets' ? 'Histórico' : activeTab === 'trash' ? 'Lixeira' : 'Banca'}
-            </span>
-        </div>
-        <div className="flex items-center gap-3">
-            <button 
-                onClick={signOut}
-                className="p-2 text-text-dim hover:text-loss transition-colors"
-                title="Sair"
-            >
-                <LogOut className="w-5 h-5" />
-            </button>
-            <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center">
-                <span className="text-[7px] font-black uppercase tracking-widest text-text-dim">Saldo</span>
-                <span className="text-[10px] font-black text-accent">{formatCurrency(allTimeStats.currentBalance)}</span>
+            <div className="flex items-center gap-3">
+                <button 
+                    onClick={signOut}
+                    className="p-2 text-text-dim hover:text-loss transition-colors"
+                    title="Sair"
+                >
+                    <LogOut className="w-5 h-5" />
+                </button>
+                <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center min-w-[80px]">
+                    <span className="text-[7px] font-black uppercase tracking-widest text-text-dim">Saldo</span>
+                    <span className="text-[10px] font-black text-accent">{formatCurrency(allTimeStats.currentBalance)}</span>
+                </div>
+                <button 
+                    onClick={() => setActiveTab('register')}
+                    className="bg-accent text-bg p-2 rounded-lg"
+                >
+                    <Plus className="w-5 h-5" />
+                </button>
             </div>
-            <button 
-                onClick={() => setActiveTab('register')}
-                className="bg-accent text-bg p-2 rounded-lg"
-            >
-                <Plus className="w-5 h-5" />
-            </button>
         </div>
       </div>
 
@@ -1222,6 +1397,7 @@ export default function App() {
                            stake: Number(betForm.stake),
                            status: betForm.status,
                            cashoutValue: betForm.cashoutValue ? Number(betForm.cashoutValue) : null,
+                           bankrollId: activeBankrollId || '',
                         };
                         if (editingBetId) {
                            updateBet(editingBetId, betData);
@@ -1532,342 +1708,376 @@ export default function App() {
               </div>
 
               <div className="space-y-12">
-                {groupedHistory.map(([date, group]: [string, any]) => (
-                  <div key={date} className="space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-center gap-4 px-2 group/header">
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-surface border border-border flex items-center justify-center font-black text-xs text-accent">
-                          {format(safeNewDate(date + 'T00:00:00'), 'dd')}
-                        </div>
-                        <div>
-                          <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-text-main">
-                            {isToday(safeNewDate(date + 'T00:00:00')) ? 'Hoje' : 
-                             isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
-                             format(safeNewDate(date + 'T00:00:00'), "EEEE, dd 'de' MMMM", { locale: ptBR })}
-                          </h3>
-                        </div>
-                      </div>
-
-                      <div className="h-[1px] hidden md:block flex-1 bg-gradient-to-r from-border to-transparent" />
-                      
-                      <div className="flex items-center gap-6">
-                        <div className="flex flex-col items-end">
-                          <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Investimento</span>
-                          <span className="text-xs font-mono font-bold text-text-main">{formatCurrency(group.totalStake)}</span>
-                        </div>
-                        <div className="flex flex-col items-end">
-                          <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Lucro do Dia</span>
-                          <span className={cn(
-                            "text-xs font-mono font-bold",
-                            group.totalProfit > 0 ? "text-accent" : group.totalProfit < 0 ? "text-loss" : "text-text-dim"
+                {groupedHistory.map(([date, group]: [string, any]) => {
+                  const isCollapsed = collapsedDates.has(date);
+                  
+                  return (
+                    <div key={date} className="space-y-4">
+                      <div 
+                        onClick={() => toggleDateCollapse(date)}
+                        className="flex flex-col md:flex-row md:items-center gap-4 px-2 group/header cursor-pointer select-none"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className={cn(
+                            "w-10 h-10 rounded-xl border flex items-center justify-center font-black text-xs transition-all",
+                            isCollapsed ? "bg-bg border-border text-text-dim" : "bg-surface border-accent text-accent"
                           )}>
-                            {group.totalProfit > 0 ? '+' : ''}{formatCurrency(group.totalProfit)}
-                          </span>
+                            {format(safeNewDate(date + 'T00:00:00'), 'dd')}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-text-main">
+                                {isToday(safeNewDate(date + 'T00:00:00')) ? 'Hoje' : 
+                                 isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
+                                 format(safeNewDate(date + 'T00:00:00'), "EEEE, dd 'de' MMMM", { locale: ptBR })}
+                              </h3>
+                              {isCollapsed ? (
+                                <ChevronRight className="w-3 h-3 text-white/20" />
+                              ) : (
+                                <ChevronDown className="w-3 h-3 text-accent" />
+                              )}
+                            </div>
+                            <div className="md:hidden mt-1 flex items-center gap-2 opacity-60">
+                               <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">
+                                 {group.bets.length} {group.bets.length === 1 ? 'entrada' : 'entradas'}
+                               </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="h-[1px] hidden md:block flex-1 bg-gradient-to-r from-border to-transparent" />
+                        
+                        <div className="flex items-center gap-6">
+                          <div className="flex flex-col items-end">
+                            <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Investimento</span>
+                            <span className="text-xs font-mono font-bold text-text-main">{formatCurrency(group.totalStake)}</span>
+                          </div>
+                          <div className="flex flex-col items-end">
+                            <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Lucro do Dia</span>
+                            <span className={cn(
+                              "text-xs font-mono font-bold",
+                              group.totalProfit > 0 ? "text-accent" : group.totalProfit < 0 ? "text-loss" : "text-text-dim"
+                            )}>
+                              {group.totalProfit > 0 ? '+' : ''}{formatCurrency(group.totalProfit)}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="glass-card overflow-hidden border-none bg-transparent">
-                      <div className="overflow-x-auto hidden md:block">
-                        <table className="w-full text-left border-collapse">
-                          <thead>
-                            <tr className="bg-surface/30 border-b border-border/50">
-                              <th className="px-6 py-5 w-10">
-                                <button 
-                                  onClick={() => toggleSelectAll(group.bets)}
-                                  className="text-text-dim hover:text-accent transition-colors"
-                                >
-                                  {selectedBetIds.size === group.bets.length && group.bets.length > 0 ? (
-                                    <CheckSquare className="w-4 h-4 text-accent" />
-                                  ) : (
-                                    <Square className="w-4 h-4" />
-                                  )}
-                                </button>
-                              </th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em]">Detalhes da Aposta</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Stake</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Odd</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Ações</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-border/30">
-                            <AnimatePresence mode="popLayout">
-                              {group.bets.map((bet: Bet) => (
-                                <motion.tr 
-                                  key={bet.id} 
-                                  initial={{ opacity: 0 }}
-                                  animate={{ opacity: 1 }}
-                                  exit={{ opacity: 0 }}
-                                  className={cn(
-                                    "hover:bg-accent/[0.02] transition-colors group relative border-l-2 border-transparent",
-                                    bet.status === 'won' || bet.status === 'half_win' ? "hover:border-accent" : 
-                                    bet.status === 'lost' || bet.status === 'half_loss' ? "hover:border-loss" : 
-                                    bet.status === 'void' ? "hover:border-refund" : "",
-                                    selectedBetIds.has(bet.id) && "bg-accent/[0.05]"
-                                  )}
-                                >
-                                  <td className="px-6 py-4">
-                                     <button 
-                                       onClick={() => toggleSelectBet(bet.id)}
-                                       className="text-text-dim hover:text-accent transition-colors"
-                                     >
-                                       {selectedBetIds.has(bet.id) ? (
-                                         <CheckSquare className="w-4 h-4 text-accent" />
-                                       ) : (
-                                         <Square className="w-4 h-4" />
-                                       )}
-                                     </button>
-                                  </td>
-                                  <td className="px-6 py-4">
-                                    <div className="flex items-start gap-3">
-                                      <div className={cn(
-                                        "w-1 h-10 rounded-full",
-                                        (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent" : 
-                                        (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss" : 
-                                        bet.status === 'void' ? "bg-refund" : "bg-text-dim/20"
-                                      )} />
-                                      <div>
-                                        <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
-                                          {bet.selection}
-                                          <StatusBadge 
-                                            status={bet.status} 
-                                            isSyncing={bet.id === syncingBetId} 
-                                          />
-                                        </div>
-                                        <div className="text-[10px] text-text-dim font-bold uppercase mt-1 tracking-wider opacity-60">
-                                          {format(safeNewDate(bet.date), "HH:mm")} • {bet.event} • {bet.market}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 font-bold text-sm text-center">
-                                    <div className="flex flex-col items-center">
-                                      <span className="font-mono text-text-main">{(bet.stake / bankroll.unitSize).toFixed(2)}u</span>
-                                      <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest leading-none mt-1">
-                                        {formatCurrency(bet.stake)}
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
-                                  <td className="px-6 py-4 text-right">
-                                    <div className={cn(
-                                      "font-black text-sm font-mono",
-                                      (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
-                                      (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
-                                      bet.status === 'void' ? "text-refund" : "text-text-dim"
-                                    )}>
-                                      {bet.status === 'pending' ? <span className="opacity-30">Pendente</span> : (bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 text-right">
-                                    <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-                                        <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
-                                          <button 
-                                            onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
-                                            )}
-                                            title="Ganha"
-                                          >
-                                            <CheckCircle2 className="w-4 h-4" />
-                                          </button>
-                                          <button 
-                                            onClick={() => updateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
-                                            )}
-                                            title="Meio Green"
-                                          >
-                                            <div className="text-[9px] font-black">½G</div>
-                                          </button>
-                                          <button 
-                                            onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
-                                            )}
-                                            title="Perdida"
-                                          >
-                                            <XCircle className="w-4 h-4" />
-                                          </button>
-                                          <button 
-                                            onClick={() => updateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
-                                            )}
-                                            title="Meio Red"
-                                          >
-                                            <div className="text-[9px] font-black">½R</div>
-                                          </button>
-                                          <button 
-                                            onClick={() => updateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
-                                            )}
-                                            title="Reembolsada"
-                                          >
-                                            <HelpCircle className="w-4 h-4" />
-                                          </button>
-                                          <button 
-                                            onClick={() => {
-                                              if (bet.status === 'cashout') {
-                                                updateStatus(bet.id, 'pending');
-                                              } else {
-                                                setCashoutBetId(bet.id);
-                                                setCashoutAmount(bet.stake.toString());
-                                              }
-                                            }}
-                                            className={cn(
-                                              "p-1.5 rounded-md transition-all hover:scale-110",
-                                              bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500"
-                                            )}
-                                            title="Encerrar"
-                                          >
-                                            <DollarSign className="w-4 h-4" />
-                                          </button>
-                                          <button 
-                                            onClick={() => {
-                                                setEditingBetId(bet.id);
-                                                setBetForm({
-                                                    date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
-                                                    sport: bet.sport,
-                                                    event: bet.event,
-                                                    market: bet.market,
-                                                    selection: bet.selection,
-                                                    odds: bet.odds.toString(),
-                                                    stake: bet.stake.toString(),
-                                                    status: bet.status,
-                                                    cashoutValue: bet.cashoutValue?.toString() || ''
-                                                });
-                                                setActiveTab('register');
-                                            }}
-                                            className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
-                                            title="Editar"
-                                          >
-                                            <Settings2 className="w-4 h-4" />
-                                          </button>
-                                          <button 
-                                            onClick={() => deleteBet(bet.id)}
-                                            className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/5 rounded-md transition-all"
-                                            title="Mover para Lixeira"
-                                          >
-                                            <Trash2 className="w-4 h-4" />
-                                          </button>
-                                        </div>
-                                    </div>
-                                  </td>
-                                </motion.tr>
-                              ))}
-                            </AnimatePresence>
-                          </tbody>
-                        </table>
-                      </div>
-
-                      {/* Mobile Card View */}
-                      <div className="md:hidden space-y-4 px-2">
-                        {group.bets.map((bet: Bet) => (
-                          <div 
-                            key={bet.id}
-                            className={cn(
-                              "bg-surface border-l-4 p-5 rounded-2xl space-y-4 shadow-sm",
-                              bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-accent/5" : 
-                              bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-loss/5" : 
-                              bet.status === 'void' ? "border-refund/50" : "border-border",
-                              selectedBetIds.has(bet.id) && "ring-2 ring-accent/20"
-                            )}
+                      <AnimatePresence>
+                        {!isCollapsed && (
+                          <motion.div 
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="glass-card overflow-hidden border-none bg-transparent"
                           >
-                             <div className="flex justify-between items-start mb-2">
-                                <div className="flex items-center gap-3">
-                                  <button onClick={() => toggleSelectBet(bet.id)} className="transition-transform active:scale-90">
-                                     {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
-                                  </button>
-                                  <span className="text-[10px] font-black uppercase tracking-widest text-text-dim bg-bg px-2 py-1 rounded">
-                                    {format(safeNewDate(bet.date), "HH:mm")}
-                                  </span>
-                                </div>
-                                <StatusBadge status={bet.status} isSyncing={bet.id === syncingBetId} />
-                             </div>
-                             
-                             <div className="space-y-1">
-                               <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
-                                 {bet.sport} • {bet.market}
-                               </p>
-                               <h4 className="text-base font-black uppercase text-text-main leading-none py-1">{bet.selection}</h4>
-                               <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight border-t border-border/10 pt-2">{bet.event}</p>
-                             </div>
+                            <div className="overflow-x-auto hidden md:block px-1">
+                              <table className="w-full text-left border-collapse">
+                                <thead>
+                                  <tr className="bg-surface/30 border-b border-border/50">
+                                    <th className="px-6 py-5 w-10">
+                                      <button 
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          toggleSelectAll(group.bets);
+                                        }}
+                                        className="text-text-dim hover:text-accent transition-colors"
+                                      >
+                                        {selectedBetIds.size === group.bets.length && group.bets.length > 0 ? (
+                                          <CheckSquare className="w-4 h-4 text-accent" />
+                                        ) : (
+                                          <Square className="w-4 h-4" />
+                                        )}
+                                      </button>
+                                    </th>
+                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em]">Detalhes da Aposta</th>
+                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Stake</th>
+                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Odd</th>
+                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
+                                    <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Ações</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border/30">
+                                  <AnimatePresence mode="popLayout">
+                                    {group.bets.map((bet: Bet) => (
+                                      <motion.tr 
+                                        key={bet.id} 
+                                        initial={{ opacity: 0 }}
+                                        animate={{ opacity: 1 }}
+                                        exit={{ opacity: 0 }}
+                                        className={cn(
+                                          "hover:bg-accent/[0.02] transition-colors group relative border-l-2 border-transparent",
+                                          bet.status === 'won' || bet.status === 'half_win' ? "hover:border-accent" : 
+                                          bet.status === 'lost' || bet.status === 'half_loss' ? "hover:border-loss" : 
+                                          bet.status === 'void' ? "hover:border-refund" : "",
+                                          selectedBetIds.has(bet.id) && "bg-accent/[0.05]"
+                                        )}
+                                      >
+                                        <td className="px-6 py-4">
+                                           <button 
+                                             onClick={() => toggleSelectBet(bet.id)}
+                                             className="text-text-dim hover:text-accent transition-colors"
+                                           >
+                                             {selectedBetIds.has(bet.id) ? (
+                                               <CheckSquare className="w-4 h-4 text-accent" />
+                                             ) : (
+                                               <Square className="w-4 h-4" />
+                                             )}
+                                           </button>
+                                        </td>
+                                        <td className="px-6 py-4">
+                                          <div className="flex items-start gap-3">
+                                            <div className={cn(
+                                              "w-1 h-10 rounded-full",
+                                              (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent" : 
+                                              (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss" : 
+                                              bet.status === 'void' ? "bg-refund" : "bg-text-dim/20"
+                                            )} />
+                                            <div>
+                                              <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
+                                                {bet.selection}
+                                                <StatusBadge 
+                                                  status={bet.status} 
+                                                  isSyncing={bet.id === syncingBetId} 
+                                                />
+                                              </div>
+                                              <div className="text-[10px] text-text-dim font-bold uppercase mt-1 tracking-wider opacity-60">
+                                                {format(safeNewDate(bet.date), "HH:mm")} • {bet.event} • {bet.market}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </td>
+                                        <td className="px-6 py-4 font-bold text-sm text-center">
+                                          <div className="flex flex-col items-center">
+                                            <span className="font-mono text-text-main">{(bet.stake / bankroll.unitSize).toFixed(2)}u</span>
+                                            <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest leading-none mt-1">
+                                              {formatCurrency(bet.stake)}
+                                            </span>
+                                          </div>
+                                        </td>
+                                        <td className="px-6 py-4 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
+                                        <td className="px-6 py-4 text-right">
+                                          <div className={cn(
+                                            "font-black text-sm font-mono",
+                                            (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
+                                            (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
+                                            bet.status === 'void' ? "text-refund" : "text-text-dim"
+                                          )}>
+                                            {bet.status === 'pending' ? <span className="opacity-30">Pendente</span> : (bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
+                                          </div>
+                                        </td>
+                                        <td className="px-6 py-4 text-right">
+                                          <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
+                                              <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
+                                                <button 
+                                                  onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                                                  )}
+                                                  title="Ganha"
+                                                >
+                                                  <CheckCircle2 className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                  onClick={() => updateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                                                  )}
+                                                  title="Meio Green"
+                                                >
+                                                  <div className="text-[9px] font-black">½G</div>
+                                                </button>
+                                                <button 
+                                                  onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                                                  )}
+                                                  title="Perdida"
+                                                >
+                                                  <XCircle className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                  onClick={() => updateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                                                  )}
+                                                  title="Meio Red"
+                                                >
+                                                  <div className="text-[9px] font-black">½R</div>
+                                                </button>
+                                                <button 
+                                                  onClick={() => updateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
+                                                  )}
+                                                  title="Reembolsada"
+                                                >
+                                                  <HelpCircle className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                  onClick={() => {
+                                                    if (bet.status === 'cashout') {
+                                                      updateStatus(bet.id, 'pending');
+                                                    } else {
+                                                      setCashoutBetId(bet.id);
+                                                      setCashoutAmount(bet.stake.toString());
+                                                    }
+                                                  }}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500"
+                                                  )}
+                                                  title="Encerrar"
+                                                >
+                                                  <DollarSign className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                  onClick={() => {
+                                                      setEditingBetId(bet.id);
+                                                      setBetForm({
+                                                          date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
+                                                          sport: bet.sport,
+                                                          event: bet.event,
+                                                          market: bet.market,
+                                                          selection: bet.selection,
+                                                          odds: bet.odds.toString(),
+                                                          stake: bet.stake.toString(),
+                                                          status: bet.status,
+                                                          cashoutValue: bet.cashoutValue?.toString() || ''
+                                                      });
+                                                      setActiveTab('register');
+                                                  }}
+                                                  className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
+                                                  title="Editar"
+                                                >
+                                                  <Settings2 className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                  onClick={() => deleteBet(bet.id)}
+                                                  className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/5 rounded-md transition-all"
+                                                  title="Mover para Lixeira"
+                                                >
+                                                  <Trash2 className="w-4 h-4" />
+                                                </button>
+                                              </div>
+                                          </div>
+                                        </td>
+                                      </motion.tr>
+                                    ))}
+                                  </AnimatePresence>
+                                </tbody>
+                              </table>
+                            </div>
 
-                             <div className="grid grid-cols-3 gap-2 border-t border-b border-border/30 py-3">
-                                <div className="text-center">
-                                  <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Stake</p>
-                                  <p className="text-xs font-mono font-bold leading-none">{(bet.stake / bankroll.unitSize).toFixed(1)}u</p>
-                                  <p className="text-[8px] font-bold text-text-dim mt-1">{formatCurrency(bet.stake)}</p>
-                                </div>
-                                <div className="text-center">
-                                  <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Odd</p>
-                                  <p className="text-xs font-mono font-bold text-accent">{bet.odds.toFixed(2)}</p>
-                                </div>
-                                <div className="text-center">
-                                  <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Retorno</p>
-                                  <p className={cn(
-                                    "text-xs font-mono font-bold",
-                                    bet.status === 'won' ? "text-accent" : bet.status === 'lost' ? "text-loss" : "text-text-dim"
-                                  )}>
-                                    {bet.status === 'pending' ? '-' : formatCurrency(bet.profit)}
-                                  </p>
-                                </div>
-                             </div>
+                            {/* Mobile Card View */}
+                            <div className="md:hidden space-y-4 px-2">
+                              {group.bets.map((bet: Bet) => (
+                                <div 
+                                  key={bet.id}
+                                  className={cn(
+                                    "bg-surface border-l-4 p-5 rounded-2xl space-y-4 shadow-sm",
+                                    bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-accent/5" : 
+                                    bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-loss/5" : 
+                                    bet.status === 'void' ? "border-refund/50" : "border-border",
+                                    selectedBetIds.has(bet.id) && "ring-2 ring-accent/20"
+                                  )}
+                                >
+                                   <div className="flex justify-between items-start mb-2">
+                                      <div className="flex items-center gap-3">
+                                        <button onClick={() => toggleSelectBet(bet.id)} className="transition-transform active:scale-90">
+                                           {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
+                                        </button>
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-text-dim bg-bg px-2 py-1 rounded">
+                                          {format(safeNewDate(bet.date), "HH:mm")}
+                                        </span>
+                                      </div>
+                                      <StatusBadge status={bet.status} isSyncing={bet.id === syncingBetId} />
+                                   </div>
+                                   
+                                   <div className="space-y-1">
+                                     <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
+                                       {bet.sport} • {bet.market}
+                                     </p>
+                                     <h4 className="text-base font-black uppercase text-text-main leading-none py-1">{bet.selection}</h4>
+                                     <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight border-t border-border/10 pt-2">{bet.event}</p>
+                                   </div>
 
-                             <div className="flex items-center gap-1 justify-between">
-                                <div className="flex items-center gap-1">
-                                  <button 
-                                    onClick={() => {
-                                      if (bet.status === 'cashout') {
-                                        updateStatus(bet.id, 'pending');
-                                      } else {
-                                        setCashoutBetId(bet.id);
-                                        setCashoutAmount(bet.stake.toString());
-                                      }
-                                    }}
-                                    className={cn(
-                                      "p-2 rounded-lg border border-border bg-surface text-amber-500 transition-all",
-                                      bet.status === 'cashout' && "bg-amber-500/10 border-amber-500/20"
-                                    )}
-                                  >
-                                    <DollarSign className="w-4 h-4" />
-                                  </button>
-                                  <button onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')} className="p-2 bg-accent/5 text-accent rounded-lg border border-accent/10"><CheckCircle2 className="w-4 h-4" /></button>
-                                  <button onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><XCircle className="w-4 h-4" /></button>
+                                   <div className="grid grid-cols-3 gap-2 border-t border-b border-border/30 py-3">
+                                      <div className="text-center">
+                                        <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Stake</p>
+                                        <p className="text-xs font-mono font-bold leading-none">{(bet.stake / bankroll.unitSize).toFixed(1)}u</p>
+                                        <p className="text-[8px] font-bold text-text-dim mt-1">{formatCurrency(bet.stake)}</p>
+                                      </div>
+                                      <div className="text-center">
+                                        <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Odd</p>
+                                        <p className="text-xs font-mono font-bold text-accent">{bet.odds.toFixed(2)}</p>
+                                      </div>
+                                      <div className="text-center">
+                                        <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Retorno</p>
+                                        <p className={cn(
+                                          "text-xs font-mono font-bold",
+                                          bet.status === 'won' ? "text-accent" : bet.status === 'lost' ? "text-loss" : "text-text-dim"
+                                        )}>
+                                          {bet.status === 'pending' ? '-' : formatCurrency(bet.profit)}
+                                        </p>
+                                      </div>
+                                   </div>
+
+                                   <div className="flex items-center gap-1 justify-between">
+                                      <div className="flex items-center gap-1">
+                                        <button 
+                                          onClick={() => {
+                                            if (bet.status === 'cashout') {
+                                              updateStatus(bet.id, 'pending');
+                                            } else {
+                                              setCashoutBetId(bet.id);
+                                              setCashoutAmount(bet.stake.toString());
+                                            }
+                                          }}
+                                          className={cn(
+                                            "p-2 rounded-lg border border-border bg-surface text-amber-500 transition-all",
+                                            bet.status === 'cashout' && "bg-amber-500/10 border-amber-500/20"
+                                          )}
+                                        >
+                                          <DollarSign className="w-4 h-4" />
+                                        </button>
+                                        <button onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')} className="p-2 bg-accent/5 text-accent rounded-lg border border-accent/10"><CheckCircle2 className="w-4 h-4" /></button>
+                                        <button onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><XCircle className="w-4 h-4" /></button>
+                                      </div>
+                                      <div className="flex items-center gap-1">
+                                         <button onClick={() => {
+                                            setEditingBetId(bet.id);
+                                            setBetForm({
+                                                date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
+                                                sport: bet.sport,
+                                                event: bet.event,
+                                                market: bet.market,
+                                                selection: bet.selection,
+                                                odds: bet.odds.toString(),
+                                                stake: bet.stake.toString(),
+                                                status: bet.status,
+                                                cashoutValue: bet.cashoutValue?.toString() || ''
+                                            });
+                                            setActiveTab('register');
+                                        }} className="p-2 bg-surface rounded-lg border border-border"><Settings2 className="w-4 h-4" /></button>
+                                        <button onClick={() => deleteBet(bet.id)} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><Trash2 className="w-4 h-4" /></button>
+                                      </div>
+                                   </div>
                                 </div>
-                                <div className="flex items-center gap-1">
-                                   <button onClick={() => {
-                                      setEditingBetId(bet.id);
-                                      setBetForm({
-                                          date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
-                                          sport: bet.sport,
-                                          event: bet.event,
-                                          market: bet.market,
-                                          selection: bet.selection,
-                                          odds: bet.odds.toString(),
-                                          stake: bet.stake.toString(),
-                                          status: bet.status,
-                                          cashoutValue: bet.cashoutValue?.toString() || ''
-                                      });
-                                      setActiveTab('register');
-                                  }} className="p-2 bg-surface rounded-lg border border-border"><Settings2 className="w-4 h-4" /></button>
-                                  <button onClick={() => deleteBet(bet.id)} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><Trash2 className="w-4 h-4" /></button>
-                                </div>
-                             </div>
-                          </div>
-                        ))}
-                      </div>
+                              ))}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
 
                 {groupedHistory.length === 0 && (
                   <div className="glass-card py-20 text-center text-zinc-500 border border-dashed border-border/50">
@@ -1884,7 +2094,7 @@ export default function App() {
           {activeTab === 'trash' && (
             <div className="space-y-6">
                <div className="space-y-8">
-                {groupedHistory.map(([date, dateBets]) => (
+                {groupedHistory.map(([date, group]: [string, any]) => (
                   <div key={date} className="space-y-3">
                     <div className="flex items-center gap-4 px-2">
                       <div className="h-[1px] flex-1 bg-border" />
@@ -1906,7 +2116,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border/50">
-                            {dateBets.map((bet) => (
+                            {group.bets.map((bet: Bet) => (
                               <tr key={bet.id} className="hover:bg-zinc-800/10 transition-colors">
                                 <td className="px-6 py-4">
                                   <div className="font-bold text-text-main text-sm uppercase">{bet.selection}</div>
@@ -1922,7 +2132,7 @@ export default function App() {
                                       <RotateCcw className="w-4 h-4" />
                                     </button>
                                     <button 
-                                      onClick={() => permanentlyDeleteBet(bet.id)}
+                                      onClick={() => setBetToDelete(bet.id)}
                                       className="p-2 hover:bg-loss/10 text-loss rounded-lg transition-colors"
                                       title="Excluir Permanentemente"
                                     >
@@ -1953,8 +2163,52 @@ export default function App() {
 
           {activeTab === 'settings' && (
             <div className="max-w-xl space-y-8">
+                <div className="glass-card p-6 border-accent/20 bg-accent/5">
+                    <div className="flex items-center justify-between mb-6">
+                        <h3 className="text-lg font-black uppercase tracking-tighter">Gerenciar Bancas</h3>
+                        <button 
+                            onClick={() => setIsAddingBankroll(true)}
+                            className="bg-accent text-bg px-4 py-2 rounded-lg font-black uppercase text-[10px] tracking-widest hover:brightness-110 transition-all flex items-center gap-2"
+                        >
+                            <Plus className="w-3 h-3" />
+                            Nova Banca
+                        </button>
+                    </div>
+
+                    <div className="space-y-3">
+                        {bankrolls.map(b => (
+                            <div key={b.id} className={cn(
+                                "p-4 rounded-xl border flex items-center justify-between transition-all",
+                                b.id === activeBankrollId ? "bg-accent/10 border-accent" : "bg-bg border-border hover:border-text-dim/30"
+                            )}>
+                                <div onClick={() => {
+                                    setActiveBankrollId(b.id);
+                                    localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', b.id);
+                                }} className="flex-1 cursor-pointer">
+                                    <div className="flex items-center gap-2">
+                                        <p className="font-black text-sm uppercase">{b.name}</p>
+                                        {b.id === activeBankrollId && <span className="text-[8px] bg-accent text-bg px-1.5 py-0.5 rounded-full font-black">ATIVA</span>}
+                                    </div>
+                                    <p className="text-[10px] font-bold text-text-dim uppercase tracking-widest mt-1">
+                                        Inicial: {formatCurrency(b.total)} • Unidade: {formatCurrency(b.unitSize)}
+                                    </p>
+                                </div>
+                                {bankrolls.length > 1 && (
+                                    <button 
+                                        onClick={() => deleteBankroll(b.id)}
+                                        className="p-2 text-text-dim hover:text-loss transition-colors"
+                                        title="Excluir Banca"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                    </button>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
                 <div className="glass-card p-6">
-                    <h3 className="text-lg font-black uppercase tracking-tighter mb-6">Configuração de Banca</h3>
+                    <h3 className="text-lg font-black uppercase tracking-tighter mb-6">Configuração da Banca: <span className="text-accent underline">{bankroll.name}</span></h3>
                     <div className="space-y-6">
                         <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Banca Inicial</label>
@@ -2213,7 +2467,7 @@ export default function App() {
                     <p className="text-[10px] font-black uppercase tracking-widest text-primary">StakeWise App</p>
                     <div className="flex items-center gap-2">
                         <span className="h-[1px] w-4 bg-primary/20"></span>
-                        <p className="text-[9px] font-bold font-mono text-primary">v1.4.1 (Stable)</p>
+                        <p className="text-[9px] font-bold font-mono text-primary">v1.4.9 (Stable)</p>
                         <span className="h-[1px] w-4 bg-primary/20"></span>
                     </div>
                     <a href="/privacy.html" target="_blank" className="text-[10px] font-black uppercase tracking-widest text-text-dim hover:text-accent mt-2 transition-colors">
@@ -2291,6 +2545,118 @@ export default function App() {
 
       {/* Modals & Overlays */}
       <AnimatePresence>
+        {isAddingBankroll && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-bg border border-border rounded-2xl shadow-2xl p-8 w-full max-w-md overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-8">
+                <h3 className="text-2xl font-black uppercase tracking-tighter">Nova Banca</h3>
+                <button onClick={() => setIsAddingBankroll(false)} className="text-text-dim hover:text-text-main">
+                  <XCircle className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="space-y-6">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-text-dim mb-2 block">Nome da Banca</label>
+                  <input 
+                    className="w-full px-4 py-3 bg-surface border border-border rounded-xl focus:outline-none focus:border-accent text-text-main font-bold"
+                    placeholder="Ex: Banca Tênis, Gestão 2..."
+                    value={newBankrollName}
+                    onChange={(e) => setNewBankrollName(e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-text-dim mb-2 block">Banca Inicial (R$)</label>
+                        <input 
+                            type="number"
+                            className="w-full px-4 py-3 bg-surface border border-border rounded-xl focus:outline-none focus:border-accent font-bold"
+                            value={newBankrollTotal}
+                            onChange={(e) => setNewBankrollTotal(e.target.value)}
+                        />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-black uppercase tracking-widest text-text-dim mb-2 block">Vlr. Unidade (R$)</label>
+                        <input 
+                            type="number"
+                            className="w-full px-4 py-3 bg-surface border border-border rounded-xl focus:outline-none focus:border-accent font-bold"
+                            value={newBankrollUnit}
+                            onChange={(e) => setNewBankrollUnit(e.target.value)}
+                        />
+                    </div>
+                </div>
+                
+                <div className="pt-4 flex gap-3">
+                    <button 
+                        onClick={() => setIsAddingBankroll(false)}
+                        className="flex-1 py-4 border border-border text-text-dim rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-surface transition-all"
+                    >
+                        Cancelar
+                    </button>
+                    <button 
+                        onClick={() => {
+                            if (!newBankrollName.trim()) {
+                                alert("Dê um nome para a banca");
+                                return;
+                            }
+                            addBankroll(
+                                newBankrollName, 
+                                parseFloat(newBankrollTotal) || 1000, 
+                                parseFloat(newBankrollUnit) || 20
+                            );
+                            setIsAddingBankroll(false);
+                            setNewBankrollName('');
+                        }}
+                        className="flex-1 py-4 bg-accent text-bg rounded-xl font-black uppercase text-[10px] tracking-widest hover:opacity-90 shadow-lg shadow-accent/20 transition-all"
+                    >
+                        Criar Banca
+                    </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {betToDelete && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-bg/90 backdrop-blur-md p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-bg border border-border rounded-2xl shadow-2xl p-8 w-full max-w-sm text-center"
+            >
+              <div className="w-16 h-16 bg-loss/10 text-loss rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 className="w-8 h-8" />
+              </div>
+              <h3 className="text-xl font-black uppercase tracking-tighter mb-2">Excluir Permanentes?</h3>
+              <p className="text-text-dim text-[10px] font-black uppercase tracking-widest mb-8 opacity-60">
+                Esta ação não pode ser desfeita. A aposta será removida para sempre.
+              </p>
+              
+              <div className="flex flex-col gap-3">
+                <button 
+                  onClick={() => permanentlyDeleteBet(betToDelete)}
+                  className="w-full py-4 bg-loss text-white rounded-xl font-black uppercase tracking-widest text-[10px] hover:opacity-90 transition-all"
+                >
+                  Confirmar Exclusão
+                </button>
+                <button 
+                  onClick={() => setBetToDelete(null)}
+                  className="w-full py-4 bg-surface border border-border text-text-main rounded-xl font-black uppercase tracking-widest text-[10px] hover:bg-zinc-800 transition-all"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {cashoutBetId && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm p-4">
             <motion.div 
@@ -2362,8 +2728,14 @@ export default function App() {
                       <h2 className="text-2xl font-black uppercase tracking-tighter">Confirmar Lote</h2>
                       <p className="text-text-dim text-xs font-bold tracking-widest uppercase mt-1">
                         {bulkQueue.length} {bulkQueue.length === 1 ? 'aposta detectada' : 'apostas detectadas'} pela IA
+                    </p>
+                    {bulkQueue.some(b => b.isLive) && (
+                      <p className="text-[10px] font-black text-accent uppercase tracking-widest mt-1 flex items-center gap-1">
+                        <Zap className="w-3 h-3" />
+                        Algumas entradas identificadas como "Ao Vivo"
                       </p>
-                    </div>
+                    )}
+                  </div>
                     <button 
                       onClick={() => setBulkQueue([])}
                       className="p-2 hover:bg-surface rounded-full transition-colors"
@@ -2373,8 +2745,16 @@ export default function App() {
                   </div>
 
                   <div className="overflow-y-auto flex-1 p-6 space-y-4">
-                    {bulkQueue.map((bet, idx) => (
-                      <div key={idx} className="bg-surface border border-border rounded-xl p-4 grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                    {bulkQueue.map((bet: any, idx) => (
+                      <div key={idx} className="bg-surface border border-border rounded-xl p-4 grid grid-cols-1 md:grid-cols-5 gap-4 items-center relative overflow-hidden group">
+                        {bet.isLive && (
+                           <div className="absolute top-0 right-10 px-3 py-1 bg-accent/20 border-b border-l border-accent/20 rounded-bl-lg">
+                              <p className="text-[9px] font-black text-accent uppercase tracking-widest flex items-center gap-1">
+                                 <Zap className="w-2.5 h-2.5" />
+                                 Entrada Ao Vivo
+                              </p>
+                           </div>
+                        )}
                         <div className="md:col-span-1">
                           <p className="text-[10px] font-black text-accent uppercase tracking-widest mb-1">{bet.sport}</p>
                           <input 
@@ -2398,6 +2778,22 @@ export default function App() {
                               setBulkQueue(newQueue);
                             }}
                           />
+                        </div>
+                        <div>
+                           <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1">Data / Hora</p>
+                           <div className="flex items-center gap-2">
+                              <input 
+                                type="datetime-local"
+                                className="bg-transparent text-xs font-bold w-full focus:outline-none focus:text-accent uppercase text-text-dim"
+                                value={new Date(new Date(bet.date).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+                                onChange={(e) => {
+                                  const newQueue = [...bulkQueue];
+                                  newQueue[idx].date = new Date(e.target.value).toISOString();
+                                  newQueue[idx].isLive = false; // Manually adjusted date usually means not "live" anymore
+                                  setBulkQueue(newQueue);
+                                }}
+                              />
+                           </div>
                         </div>
                         <div className="flex gap-4">
                           <div>

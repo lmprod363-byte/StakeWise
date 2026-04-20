@@ -79,6 +79,7 @@ export interface ExtractedBet {
   odds: number;
   stake: number;
   date?: string; // ISO format or descriptive
+  isLive?: boolean;
 }
 
 export interface BetOutcome {
@@ -160,13 +161,15 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   const model = "gemini-3-flash-preview";
   
   const currentYear = new Date().getFullYear();
+  const todayISO = new Date().toISOString().split('T')[0];
   const prompt = `Analise este print de aposta esportiva e extraia minuciosamente os dados. 
   
   FOCO EM DATA E HORÁRIO:
   1. Identifique a DATA e o HORÁRIO exatos do evento no print. 
   2. Se faltar o ano, use ${currentYear}. 
   3. Formate OBRIGATORIAMENTE em ISO 8601 (YYYY-MM-DDTHH:mm:ss). 
-  4. Se houver apenas o horário, assuma a data de hoje (2026-04-19).
+  4. Se houver apenas o horário, assuma a data de hoje (${todayISO}).
+  5. Identifique se é uma "Entrada Ao Vivo" (quando não há horário futuro ou o evento está em andamento). Se não houver horário especificado no print, defina isLive como true.
   
   OUTROS DADOS:
   - Extraia Esporte, Evento, Mercado, Seleção, Odd e Stake.
@@ -204,8 +207,9 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
               odds: { type: Type.NUMBER, description: "Valor da odd" },
               stake: { type: Type.NUMBER, description: "Valor do investimento (valor numérico)" },
               date: { type: Type.STRING, description: "Data e hora do evento formatada em ISO 8601 (YYYY-MM-DDTHH:mm:ss)" },
+              isLive: { type: Type.BOOLEAN, description: "Verdadeiro se for uma entrada ao vivo ou se o horário não for encontrado" },
             },
-            required: ["sport", "event", "market", "selection", "odds", "stake"],
+            required: ["sport", "event", "market", "selection", "odds", "stake", "isLive"],
           },
         },
       });

@@ -15,11 +15,16 @@ export interface Bet {
   notes?: string;
   cashoutValue?: number;
   deleted?: boolean;
+  bankrollId: string;
 }
 
 export interface Bankroll {
+  id: string;
+  name: string;
   total: number;
   unitSize: number;
+  userId: string;
+  createdAt: any;
 }
 
 export interface Stats {

@@ -11,7 +11,7 @@ service cloud.firestore {
     function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
     function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
     function docOwner(data) { return isSignedIn() && data.userId == request.auth.uid; }
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 256; }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
