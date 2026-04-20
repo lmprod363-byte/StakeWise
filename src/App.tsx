@@ -27,7 +27,9 @@ import {
   RotateCcw,
   Share,
   Copy,
-  ChevronRight
+  ChevronRight,
+  Check,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -101,6 +103,8 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState<{ current: number, total: number } | null>(null);
   const [bulkQueue, setBulkQueue] = useState<Omit<Bet, 'id' | 'profit'>[]>([]);
   const [successToast, setSuccessToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
+  const [cashoutBetId, setCashoutBetId] = useState<string | null>(null);
+  const [cashoutAmount, setCashoutAmount] = useState("");
 
   const showToast = (message: string, type: 'success' | 'info' = 'success') => {
     setSuccessToast({ message, type });
@@ -389,6 +393,10 @@ export default function App() {
 
   const historyBets = useMemo(() => {
     return bets.filter(bet => {
+        // Handle Trash vs History view
+        if (activeTab === 'trash' && !bet.deleted) return false;
+        if (activeTab !== 'trash' && bet.deleted) return false;
+
         // Status Filter
         if (historyStatusFilter !== 'Todos') {
             const statusMap: Record<string, Bet['status']> = {
@@ -414,15 +422,21 @@ export default function App() {
 
         return true;
     });
-  }, [bets, historySearchTerm, historyStatusFilter]);
+  }, [bets, historySearchTerm, historyStatusFilter, activeTab]);
 
   const groupedHistory = useMemo(() => {
-    const groups: { [key: string]: Bet[] } = {};
+    const groups: { [key: string]: { bets: Bet[], totalStake: number, totalProfit: number } } = {};
     
     historyBets.forEach(bet => {
         const dateKey = format(safeNewDate(bet.date), 'yyyy-MM-dd');
-        if (!groups[dateKey]) groups[dateKey] = [];
-        groups[dateKey].push(bet);
+        if (!groups[dateKey]) {
+            groups[dateKey] = { bets: [], totalStake: 0, totalProfit: 0 };
+        }
+        groups[dateKey].bets.push(bet);
+        if (bet.status !== 'pending') {
+            groups[dateKey].totalStake += bet.stake;
+            groups[dateKey].totalProfit += bet.profit;
+        }
     });
     
     return Object.entries(groups).sort((a, b) => b[0].localeCompare(a[0]));
@@ -613,6 +627,47 @@ export default function App() {
       setEditingBetId(null);
     } catch (error) {
       console.error("Erro ao atualizar aposta:", error);
+    }
+  };
+
+  const deleteSelectedBets = async () => {
+    if (!user || selectedBetIds.size === 0) return;
+    if (!window.confirm(`Deseja mover as ${selectedBetIds.size} apostas selecionadas para a lixeira?`)) return;
+    
+    try {
+      const ids = Array.from(selectedBetIds) as string[];
+      for (const id of ids) {
+        await updateDoc(doc(db, 'bets', id), {
+          deleted: true,
+          updatedAt: serverTimestamp()
+        });
+      }
+      setSelectedBetIds(new Set());
+      showToast("Apostas movidas para a lixeira!");
+    } catch (error) {
+      console.error("Erro ao excluir apostas:", error);
+    }
+  };
+
+  const updateStatusForSelected = async (status: Bet['status']) => {
+    if (!user || selectedBetIds.size === 0) return;
+    
+    try {
+      const ids = Array.from(selectedBetIds) as string[];
+      for (const id of ids) {
+        const bet = bets.find(b => b.id === id);
+        if (bet) {
+          await updateDoc(doc(db, 'bets', id), {
+            status,
+            profit: calculateProfit(bet.stake, bet.odds, status, bet.cashoutValue),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+      setSelectedBetIds(new Set());
+      showToast(`Status das apostas alterado para ${status === 'won' ? 'Ganha' : status === 'lost' ? 'Perdida' : status === 'void' ? 'Reembolsada' : 'Pendente'}`);
+    } catch (error) {
+      console.error("Erro ao atualizar status em massa:", error);
     }
   };
 
@@ -872,6 +927,13 @@ export default function App() {
             </span>
         </div>
         <div className="flex items-center gap-3">
+            <button 
+                onClick={signOut}
+                className="p-2 text-text-dim hover:text-loss transition-colors"
+                title="Sair"
+            >
+                <LogOut className="w-5 h-5" />
+            </button>
             <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center">
                 <span className="text-[7px] font-black uppercase tracking-widest text-text-dim">Saldo</span>
                 <span className="text-[10px] font-black text-accent">{formatCurrency(bankroll.total + stats.totalProfit)}</span>
@@ -1320,20 +1382,37 @@ export default function App() {
                 </div>
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
                   {selectedBetIds.size > 0 ? (
-                    <button 
-                      onClick={() => {
-                        const selectedBets = bets.filter(b => selectedBetIds.has(b.id));
-                        syncResults(selectedBets);
-                      }}
-                      disabled={isSyncingResults}
-                      className={cn(
-                          "flex items-center justify-center gap-2 px-6 py-3 bg-accent text-bg rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:opacity-90 shadow-lg shadow-accent/20 disabled:opacity-50",
-                          isSyncingResults && "animate-pulse"
-                      )}
-                    >
-                      <Sparkles className="w-4 h-4" />
-                      Sincronizar Selecionados ({selectedBetIds.size})
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                       <button 
+                         onClick={() => {
+                           const selectedBets = bets.filter(b => selectedBetIds.has(b.id));
+                           syncResults(selectedBets);
+                         }}
+                         disabled={isSyncingResults}
+                         className={cn(
+                             "flex items-center justify-center gap-2 px-6 py-3 bg-accent text-bg rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:opacity-90 shadow-lg shadow-accent/20 disabled:opacity-50",
+                             isSyncingResults && "animate-pulse"
+                         )}
+                       >
+                         <Sparkles className="w-4 h-4" />
+                         Sincronizar ({selectedBetIds.size})
+                       </button>
+
+                       <button 
+                         onClick={deleteSelectedBets}
+                         className="flex items-center justify-center gap-2 px-4 py-3 bg-loss text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:opacity-90 shadow-lg shadow-loss/20"
+                       >
+                         <Trash2 className="w-4 h-4" />
+                         Excluir
+                       </button>
+
+                       <div className="flex items-center gap-1 bg-surface p-1 rounded-xl border border-border">
+                          <button onClick={() => updateStatusForSelected('won')} className="p-2 text-accent hover:bg-accent/10 rounded-lg transition-all" title="Marcar como Ganha"><CheckCircle2 className="w-4 h-4" /></button>
+                          <button onClick={() => updateStatusForSelected('lost')} className="p-2 text-loss hover:bg-loss/10 rounded-lg transition-all" title="Marcar como Perdida"><XCircle className="w-4 h-4" /></button>
+                          <button onClick={() => updateStatusForSelected('void')} className="p-2 text-zinc-400 hover:bg-zinc-100 rounded-lg transition-all" title="Marcar como Reembolsada"><HelpCircle className="w-4 h-4" /></button>
+                          <button onClick={() => updateStatusForSelected('pending')} className="p-2 text-zinc-500 hover:bg-zinc-100 rounded-lg transition-all" title="Marcar como Pendente"><Clock className="w-4 h-4" /></button>
+                       </div>
+                    </div>
                   ) : (
                     <button 
                       onClick={() => syncResults()}
@@ -1375,30 +1454,53 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="space-y-8">
-                {groupedHistory.map(([date, dateBets]) => (
-                  <div key={date} className="space-y-3">
-                    <div className="flex items-center gap-4 px-2">
-                      <div className="h-[1px] flex-1 bg-border" />
-                      <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">
-                        {isToday(safeNewDate(date + 'T00:00:00')) ? 'Hoje' : 
-                         isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
-                         format(safeNewDate(date + 'T00:00:00'), "dd 'de' MMMM", { locale: ptBR })}
-                      </h3>
-                      <div className="h-[1px] flex-1 bg-border" />
+              <div className="space-y-12">
+                {groupedHistory.map(([date, group]: [string, any]) => (
+                  <div key={date} className="space-y-4">
+                    <div className="flex flex-col md:flex-row md:items-center gap-4 px-2 group/header">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-surface border border-border flex items-center justify-center font-black text-xs text-accent">
+                          {format(safeNewDate(date + 'T00:00:00'), 'dd')}
+                        </div>
+                        <div>
+                          <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-text-main">
+                            {isToday(safeNewDate(date + 'T00:00:00')) ? 'Hoje' : 
+                             isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
+                             format(safeNewDate(date + 'T00:00:00'), "EEEE, dd 'de' MMMM", { locale: ptBR })}
+                          </h3>
+                        </div>
+                      </div>
+
+                      <div className="h-[1px] hidden md:block flex-1 bg-gradient-to-r from-border to-transparent" />
+                      
+                      <div className="flex items-center gap-6">
+                        <div className="flex flex-col items-end">
+                          <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Investimento</span>
+                          <span className="text-xs font-mono font-bold text-text-main">{formatCurrency(group.totalStake)}</span>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">Lucro do Dia</span>
+                          <span className={cn(
+                            "text-xs font-mono font-bold",
+                            group.totalProfit > 0 ? "text-accent" : group.totalProfit < 0 ? "text-loss" : "text-text-dim"
+                          )}>
+                            {group.totalProfit > 0 ? '+' : ''}{formatCurrency(group.totalProfit)}
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
                     <div className="glass-card overflow-hidden border-none bg-transparent">
                       <div className="overflow-x-auto hidden md:block">
                         <table className="w-full text-left border-collapse">
                           <thead>
-                            <tr className="bg-surface/50 border-b border-border/50">
+                            <tr className="bg-surface/30 border-b border-border/50">
                               <th className="px-6 py-5 w-10">
                                 <button 
-                                  onClick={() => toggleSelectAll(dateBets)}
+                                  onClick={() => toggleSelectAll(group.bets)}
                                   className="text-text-dim hover:text-accent transition-colors"
                                 >
-                                  {selectedBetIds.size === dateBets.length && dateBets.length > 0 ? (
+                                  {selectedBetIds.size === group.bets.length && group.bets.length > 0 ? (
                                     <CheckSquare className="w-4 h-4 text-accent" />
                                   ) : (
                                     <Square className="w-4 h-4" />
@@ -1406,22 +1508,25 @@ export default function App() {
                                 </button>
                               </th>
                               <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em]">Detalhes da Aposta</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Unidades</th>
+                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Stake</th>
                               <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-center">Odd</th>
-                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Resultado</th>
+                              <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
                               <th className="px-6 py-5 text-[9px] font-black text-text-dim uppercase tracking-[0.2em] text-right">Ações</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-border/30">
                             <AnimatePresence mode="popLayout">
-                              {dateBets.map((bet) => (
+                              {group.bets.map((bet: Bet) => (
                                 <motion.tr 
                                   key={bet.id} 
                                   initial={{ opacity: 0 }}
                                   animate={{ opacity: 1 }}
                                   exit={{ opacity: 0 }}
                                   className={cn(
-                                    "hover:bg-accent/[0.02] transition-colors group relative",
+                                    "hover:bg-accent/[0.02] transition-colors group relative border-l-2 border-transparent",
+                                    bet.status === 'won' || bet.status === 'half_win' ? "hover:border-accent" : 
+                                    bet.status === 'lost' || bet.status === 'half_loss' ? "hover:border-loss" : 
+                                    bet.status === 'void' ? "hover:border-refund" : "",
                                     selectedBetIds.has(bet.id) && "bg-accent/[0.05]"
                                   )}
                                 >
@@ -1482,7 +1587,7 @@ export default function App() {
                                     <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
                                         <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
                                           <button 
-                                            onClick={() => updateStatus(bet.id, 'won')}
+                                            onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
                                             className={cn(
                                               "p-1.5 rounded-md transition-all hover:scale-110",
                                               bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
@@ -1492,7 +1597,7 @@ export default function App() {
                                             <CheckCircle2 className="w-4 h-4" />
                                           </button>
                                           <button 
-                                            onClick={() => updateStatus(bet.id, 'half_win')}
+                                            onClick={() => updateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
                                             className={cn(
                                               "p-1.5 rounded-md transition-all hover:scale-110",
                                               bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
@@ -1502,7 +1607,7 @@ export default function App() {
                                             <div className="text-[9px] font-black">½G</div>
                                           </button>
                                           <button 
-                                            onClick={() => updateStatus(bet.id, 'lost')}
+                                            onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
                                             className={cn(
                                               "p-1.5 rounded-md transition-all hover:scale-110",
                                               bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
@@ -1512,7 +1617,7 @@ export default function App() {
                                             <XCircle className="w-4 h-4" />
                                           </button>
                                           <button 
-                                            onClick={() => updateStatus(bet.id, 'half_loss')}
+                                            onClick={() => updateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
                                             className={cn(
                                               "p-1.5 rounded-md transition-all hover:scale-110",
                                               bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
@@ -1522,7 +1627,7 @@ export default function App() {
                                             <div className="text-[9px] font-black">½R</div>
                                           </button>
                                           <button 
-                                            onClick={() => updateStatus(bet.id, 'void')}
+                                            onClick={() => updateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
                                             className={cn(
                                               "p-1.5 rounded-md transition-all hover:scale-110",
                                               bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
@@ -1533,9 +1638,11 @@ export default function App() {
                                           </button>
                                           <button 
                                             onClick={() => {
-                                              const val = window.prompt("Valor do Cash Out (R$):", bet.stake.toString());
-                                              if (val !== null && val !== "") {
-                                                updateStatus(bet.id, 'cashout', parseFloat(val.replace(',', '.')) || 0);
+                                              if (bet.status === 'cashout') {
+                                                updateStatus(bet.id, 'pending');
+                                              } else {
+                                                setCashoutBetId(bet.id);
+                                                setCashoutAmount(bet.stake.toString());
                                               }
                                             }}
                                             className={cn(
@@ -1585,28 +1692,36 @@ export default function App() {
                       </div>
 
                       {/* Mobile Card View */}
-                      <div className="md:hidden space-y-3 px-2">
-                        {dateBets.map((bet) => (
+                      <div className="md:hidden space-y-4 px-2">
+                        {group.bets.map((bet: Bet) => (
                           <div 
                             key={bet.id}
                             className={cn(
-                              "bg-surface border border-border p-4 rounded-xl space-y-4",
-                              selectedBetIds.has(bet.id) && "border-accent ring-1 ring-accent/20"
+                              "bg-surface border-l-4 p-5 rounded-2xl space-y-4 shadow-sm",
+                              bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-accent/5" : 
+                              bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-loss/5" : 
+                              bet.status === 'void' ? "border-refund/50" : "border-border",
+                              selectedBetIds.has(bet.id) && "ring-2 ring-accent/20"
                             )}
                           >
-                             <div className="flex justify-between items-start">
-                                <button onClick={() => toggleSelectBet(bet.id)}>
-                                   {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim" />}
-                                </button>
+                             <div className="flex justify-between items-start mb-2">
+                                <div className="flex items-center gap-3">
+                                  <button onClick={() => toggleSelectBet(bet.id)} className="transition-transform active:scale-90">
+                                     {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
+                                  </button>
+                                  <span className="text-[10px] font-black uppercase tracking-widest text-text-dim bg-bg px-2 py-1 rounded">
+                                    {format(safeNewDate(bet.date), "HH:mm")}
+                                  </span>
+                                </div>
                                 <StatusBadge status={bet.status} isSyncing={bet.id === syncingBetId} />
                              </div>
                              
-                             <div>
-                               <p className="text-xs font-black uppercase tracking-widest text-text-dim mb-1 opacity-60">
-                                 {format(safeNewDate(bet.date), "HH:mm")} • {bet.sport}
+                             <div className="space-y-1">
+                               <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
+                                 {bet.sport} • {bet.market}
                                </p>
-                               <h4 className="text-sm font-black uppercase text-text-main line-clamp-1">{bet.selection}</h4>
-                               <p className="text-[10px] font-bold text-text-dim uppercase truncate">{bet.event} • {bet.market}</p>
+                               <h4 className="text-base font-black uppercase text-text-main leading-none py-1">{bet.selection}</h4>
+                               <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight border-t border-border/10 pt-2">{bet.event}</p>
                              </div>
 
                              <div className="grid grid-cols-3 gap-2 border-t border-b border-border/30 py-3">
@@ -1632,8 +1747,24 @@ export default function App() {
 
                              <div className="flex items-center gap-1 justify-between">
                                 <div className="flex items-center gap-1">
-                                  <button onClick={() => updateStatus(bet.id, 'won')} className="p-2 bg-accent/5 text-accent rounded-lg border border-accent/10"><CheckCircle2 className="w-4 h-4" /></button>
-                                  <button onClick={() => updateStatus(bet.id, 'lost')} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><XCircle className="w-4 h-4" /></button>
+                                  <button 
+                                    onClick={() => {
+                                      if (bet.status === 'cashout') {
+                                        updateStatus(bet.id, 'pending');
+                                      } else {
+                                        setCashoutBetId(bet.id);
+                                        setCashoutAmount(bet.stake.toString());
+                                      }
+                                    }}
+                                    className={cn(
+                                      "p-2 rounded-lg border border-border bg-surface text-amber-500 transition-all",
+                                      bet.status === 'cashout' && "bg-amber-500/10 border-amber-500/20"
+                                    )}
+                                  >
+                                    <DollarSign className="w-4 h-4" />
+                                  </button>
+                                  <button onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')} className="p-2 bg-accent/5 text-accent rounded-lg border border-accent/10"><CheckCircle2 className="w-4 h-4" /></button>
+                                  <button onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><XCircle className="w-4 h-4" /></button>
                                 </div>
                                 <div className="flex items-center gap-1">
                                    <button onClick={() => {
@@ -2048,6 +2179,63 @@ export default function App() {
 
       {/* Modals & Overlays */}
       <AnimatePresence>
+        {cashoutBetId && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="bg-bg border border-border rounded-2xl shadow-2xl p-6 w-full max-w-sm overflow-hidden"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-black uppercase tracking-tighter">Encerrar Aposta</h3>
+                <button onClick={() => setCashoutBetId(null)} className="text-text-dim hover:text-text-main">
+                  <XCircle className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-text-dim mb-2 block">
+                    Valor Recebido (R$)
+                  </label>
+                  <input 
+                    type="number"
+                    step="0.01"
+                    autoFocus
+                    value={cashoutAmount}
+                    onChange={(e) => setCashoutAmount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        const val = parseFloat(cashoutAmount.replace(',', '.'));
+                        updateStatus(cashoutBetId, 'cashout', val || 0);
+                        setCashoutBetId(null);
+                      }
+                    }}
+                    className="w-full px-4 py-3 bg-surface border border-border rounded-xl focus:outline-none focus:border-accent text-lg font-bold text-text-main"
+                    placeholder="0.00"
+                  />
+                </div>
+                
+                <p className="text-[9px] font-bold text-text-dim uppercase tracking-widest leading-relaxed">
+                  Informe o valor que você recebeu ao encerrar a aposta antes do final do evento.
+                </p>
+                
+                <button 
+                  onClick={() => {
+                    const val = parseFloat(cashoutAmount.replace(',', '.'));
+                    updateStatus(cashoutBetId, 'cashout', val || 0);
+                    setCashoutBetId(null);
+                  }}
+                  className="w-full py-4 bg-accent text-bg rounded-xl font-black uppercase tracking-[0.2em] text-xs shadow-lg shadow-accent/20 hover:opacity-95 transition-all"
+                >
+                  Confirmar Cash Out
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
         {bulkQueue.length > 0 && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/80 backdrop-blur-sm p-4 items-start pt-10">
             <motion.div 
