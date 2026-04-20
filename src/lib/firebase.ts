@@ -25,34 +25,45 @@ if (typeof window !== 'undefined') {
 
 export const googleProvider = new GoogleAuthProvider();
 
-export const signInWithGoogle = async () => {
+export const signInWithGoogle = async (forceRedirect = false) => {
   try {
-    const isMobileApp = /wv|Webview|Android|iPhone/i.test(navigator.userAgent) || 
-                       (window.location.protocol === 'file:' || window.location.protocol.includes('app'));
+    const isIframe = window.self !== window.top;
+    const isAPK = window.location.protocol === 'file:' || 
+                  window.location.protocol.includes('app') || 
+                  (typeof window !== 'undefined' && (window as any).AndroidShell);
     
-    if (isMobileApp) {
-      console.log("Detectado ambiente mobile/APK. Usando redirecionamento...");
-      // Redirect costuma ser mais estável em WebViews que Popups
+    // Em WebViews (APK), o popup geralmente falha. Usamos Redirect.
+    // No navegador (mesmo mobile) ou Iframe, o Popup é mais confiável.
+    if (forceRedirect || (isAPK && !isIframe)) {
+      console.log("Usando Redirecionamento de Auth...");
       return await signInWithRedirect(auth, googleProvider);
     }
 
+    console.log("Usando Popup de Auth...");
     return await signInWithPopup(auth, googleProvider);
   } catch (error: any) {
-    console.error("Erro na autenticação:", error);
+    console.error("Erro detalhado na autenticação:", error);
     
-    if (error.code === 'auth/unauthorized-domain') {
-      const currentDomain = window.location.hostname || "localhost";
-      throw new Error(`Domínio não autorizado: ${currentDomain}. Adicione este endereço no Firebase > Authentication > Authorized Domains.`);
+    const errorCode = error.code || '';
+    const currentDomain = window.location.hostname || "seu-dominio.com";
+
+    if (errorCode === 'auth/unauthorized-domain') {
+      throw new Error(`DOMÍNIO NÃO AUTORIZADO: Adicione '${currentDomain}' na lista de 'Domínios Autorizados' no Console do Firebase (Authentication > Settings).`);
     }
     
-    if (error.message.includes('missing initial state')) {
-      throw new Error('Erro de Sessão: O Google bloqueia login em alguns aplicativos APK. Por favor, utilize o login por E-MAIL e SENHA para entrar no app instalado.');
+    if (errorCode === 'auth/popup-blocked') {
+      throw new Error('POPUP BLOQUEADO: O seu navegador bloqueou a janela de login. Por favor, permita popups para este site ou utilize o login por E-MAIL.');
     }
 
-    throw new Error(`Erro: ${error.message || 'Falha na autenticação'}`);
+    if (errorCode === 'auth/operation-not-allowed') {
+      throw new Error("PROVEDOR DESATIVADO: O login do Google não está ativado no seu Console do Firebase.");
+    }
+
+    throw new Error(`Erro (${errorCode}): ${error.message}`);
   }
 };
 export const loginWithEmail = (email: string, pass: string) => signInWithEmailAndPassword(auth, email, pass);
 export const registerWithEmail = (email: string, pass: string) => createUserWithEmailAndPassword(auth, email, pass);
 export const resetPassword = (email: string) => sendPasswordResetEmail(auth, email);
+export { getRedirectResult };
 export const signOut = () => auth.signOut();

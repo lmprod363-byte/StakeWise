@@ -59,7 +59,7 @@ import {
   getDocFromServer
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { auth, db, signInWithGoogle, signOut, loginWithEmail, registerWithEmail } from './lib/firebase';
+import { auth, db, signInWithGoogle, signOut, loginWithEmail, registerWithEmail, getRedirectResult } from './lib/firebase';
 import { cn, formatCurrency, calculateProfit, safeNewDate } from './lib/utils';
 import { Bet, Bankroll, Stats } from './types';
 import { extractBetFromImage, checkBetResult, getAIInsights, AIInsight, openApiKeySelector } from './services/geminiService';
@@ -113,6 +113,27 @@ export default function App() {
 
   // Auth Effect
   useEffect(() => {
+    const checkRedirect = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result?.user) {
+          showToast("Login realizado com sucesso!", "success");
+        }
+      } catch (err: any) {
+        console.error("Erro no redirect auth:", err);
+        if (err.code === 'auth/unauthorized-domain') {
+          const domain = window.location.hostname || "seu-dominio.com";
+          setAuthError(`DOMÍNIO NÃO AUTORIZADO: Adicione '${domain}' no Console do Firebase > Authentication > Settings > Authorized Domains.`);
+        } else if (err.code === 'auth/popup-blocked') {
+          setAuthError("POPUP BLOQUEADO: O navegador bloqueou a janela de login.");
+        } else {
+          setAuthError(`Erro no retorno do Google: ${err.message}`);
+        }
+      }
+    };
+
+    checkRedirect();
+
     return onAuthStateChanged(auth, (u) => {
       setUser(u);
       setAuthLoading(false);
@@ -736,15 +757,15 @@ export default function App() {
                 } catch (err: any) {
                   const errorCode = err.code || '';
                   if (errorCode === 'auth/unauthorized-domain' || err.message.includes('domínio não autorizado')) {
-                    const domain = window.location.hostname || "local-dist-apk";
-                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: Adicione ${domain} no Console do Firebase.`);
+                    const domain = window.location.hostname || "seu-dominio.com";
+                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: Adicione '${domain}' no Console do Firebase > Authentication > Settings > Authorized Domains.`);
                   } else if (errorCode === 'auth/operation-not-allowed') {
                     setAuthError("PROVEDOR DESATIVADO: Ative 'E-mail/Senha' no Firebase em Authentication > Sign-in method.");
                   } else {
                     setAuthError(err.message.includes('auth/invalid-credential') || err.message.includes('auth/wrong-password') ? 'Email ou senha incorretos.' : 
                                  err.message.includes('auth/email-already-in-use') ? 'Este email já está em uso.' : 
                                  err.message.includes('auth/weak-password') ? 'A senha deve ter pelo menos 6 caracteres.' :
-                                 `Erro de Login (${errorCode}): ${err.message}`);
+                                 `Erro de Login: ${err.message}`);
                   }
                 }
               }}
@@ -765,18 +786,16 @@ export default function App() {
                 required 
               />
               
-              {authError && (
-                <p className="text-[10px] font-black uppercase tracking-widest text-loss bg-loss/10 p-3 rounded border border-loss/20 text-center">
-                  {authError}
-                </p>
-              )}
-
               <button 
                 type="submit"
                 className="w-full bg-accent text-bg py-4 px-6 rounded-xl font-black uppercase text-xs tracking-widest hover:opacity-90 active:scale-95 transition-all"
               >
                 {isRegistering ? 'Criar Conta' : 'Entrar na Plataforma'}
               </button>
+              
+              <p className="text-[9px] text-text-dim font-bold uppercase tracking-widest text-center opacity-40 px-4">
+                Ao continuar, você concorda com nossa <a href="/privacy.html" target="_blank" className="text-accent underline">Política de Privacidade</a>.
+              </p>
             </form>
 
             <div className="relative flex items-center py-4">
@@ -791,24 +810,50 @@ export default function App() {
                 try {
                   await signInWithGoogle();
                 } catch (err: any) {
-                  const errorCode = err.code || '';
-                  if (errorCode === 'auth/unauthorized-domain' || err.message.includes('domínio não autorizado')) {
-                    const domain = window.location.hostname || "local-dist-apk";
-                    setAuthError(`DOMÍNIO NÃO AUTORIZADO: Este domínio (${domain}) deve ser adicionado no Console do Firebase > Authentication > Settings > Authorized Domains. Se estiver no APK, adicione o domínio do Netlify onde o app está hospedado.`);
-                  } else if (errorCode === 'auth/operation-not-allowed') {
-                    setAuthError("PROVEDOR DESATIVADO: Você precisa ativar o 'Google Login' e 'Email/Password' no Console do Firebase em Authentication > Sign-in method.");
-                  } else if (errorCode === 'auth/popup-blocked') {
-                    setAuthError("POPUP BLOQUEADO: O navegador ou WebView bloqueou a janela de login. Tente usar o login por Email.");
-                  } else {
-                    setAuthError(`ERRO DE LOGIN (${errorCode}): ${err.message}`);
-                  }
+                  setAuthError(err.message);
                 }
               }}
               className="w-full flex items-center justify-center gap-4 bg-surface border border-border text-text-main py-4 px-6 rounded-xl font-black uppercase text-xs tracking-widest hover:border-text-dim active:scale-95 transition-all"
             >
-              <LogIn className="w-5 h-5" />
+              <LogIn className="w-5 h-5 text-accent" />
               Entrar com Google
             </button>
+
+            {authError && (
+              <div className="space-y-3">
+                <div className="bg-loss/10 border border-loss/20 p-4 rounded-xl">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-loss text-center">
+                    {authError}
+                  </p>
+                  
+                  {authError.includes('DOMÍNIO NÃO AUTORIZADO') && (
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(window.location.hostname);
+                        showToast("Domínio copiado!", "info");
+                      }}
+                      className="w-full mt-3 flex items-center justify-center gap-2 py-2 bg-loss text-white text-[9px] font-black uppercase tracking-widest rounded-lg hover:opacity-90"
+                    >
+                      Copiar Domínio p/ Console Firebase
+                    </button>
+                  )}
+                </div>
+
+                <button 
+                  onClick={async () => {
+                    setAuthError('');
+                    try {
+                      await signInWithGoogle(true); // Force Redirect
+                    } catch (err: any) {
+                      setAuthError(err.message);
+                    }
+                  }}
+                  className="w-full text-[9px] font-black uppercase tracking-widest text-text-dim hover:text-accent transition-colors"
+                >
+                  Problemas com o Popup? Tente este link alternativo
+                </button>
+              </div>
+            )}
           </div>
 
           <div className="p-6 bg-surface/50 border-t border-border text-center">
@@ -2107,6 +2152,9 @@ export default function App() {
                         <p className="text-[9px] font-bold font-mono text-primary">v1.4.1 (Stable)</p>
                         <span className="h-[1px] w-4 bg-primary/20"></span>
                     </div>
+                    <a href="/privacy.html" target="_blank" className="text-[10px] font-black uppercase tracking-widest text-text-dim hover:text-accent mt-2 transition-colors">
+                        Política de Privacidade
+                    </a>
                 </div>
             </div>
           )}
