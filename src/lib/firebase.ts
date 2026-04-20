@@ -59,6 +59,10 @@ export const signInWithGoogle = async (forceRedirect = false) => {
       throw new Error("PROVEDOR DESATIVADO: O login do Google não está ativado no seu Console do Firebase.");
     }
 
+    if (errorCode === 'auth/network-request-failed') {
+      throw new Error('ERRO DE CONEXÃO: O Firebase não conseguiu se comunicar com o servidor. Motivos comuns: Bloqueador de anúncios (AdBlock), VPN ativa, ou internet instável. Tente desativar extensões e recarregar.');
+    }
+
     throw new Error(`Erro (${errorCode}): ${error.message}`);
   }
 };

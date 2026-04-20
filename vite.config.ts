@@ -16,7 +16,22 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        manifest: false, // Using external manifest file /public/manifest.json
+        manifest: false, 
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+          // Avoid caching external Firebase Auth requests
+          navigateFallbackDenylist: [/^\/__/],
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/identitytoolkit\.googleapis\.com/,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^https:\/\/securetoken\.googleapis\.com/,
+              handler: 'NetworkOnly',
+            }
+          ]
+        },
         devOptions: {
           enabled: true
         }

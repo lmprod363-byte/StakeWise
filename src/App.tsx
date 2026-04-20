@@ -769,9 +769,9 @@ export default function App() {
       <div className="min-h-screen bg-bg flex flex-col items-center justify-center p-6">
         <div className="max-w-md w-full glass-card overflow-hidden">
           <div className="p-8 border-b border-border text-center">
-            <div className="text-accent font-black text-4xl tracking-tighter mb-2 uppercase">BetStrat.</div>
+            <div className="text-accent font-black text-4xl tracking-tighter mb-2 uppercase">StakeWise.</div>
             <p className="text-text-dim text-[10px] font-black uppercase tracking-widest leading-relaxed">
-              Gestão profissional de banca na nuvem
+              Gestão de banca na nuvem v1.4.6
             </p>
           </div>
 
