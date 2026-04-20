@@ -8,27 +8,18 @@
     <meta name="apple-mobile-web-app-title" content="StakeWise" />
     <meta name="theme-color" content="#121214" />
     <link rel="apple-touch-icon" href="https://ui-avatars.com/api/?name=S+W&background=0A0B0E&color=00FF95&size=180&bold=true&font-size=0.4" />
-    <link rel="manifest" href="/manifest.json?v=1.4.1" />
+    <link rel="manifest" href="/manifest.json?v=1.4.4" />
     <title>StakeWise - Gestão de Apostas</title>
     <script>
-      // Global fix for fetch getter-only error in certain environments
-      (function() {
-        var protect = function(obj) {
-          try {
-            var f = obj.fetch;
-            if (f && typeof f === 'function') {
-              Object.defineProperty(obj, 'fetch', {
-                configurable: true,
-                enumerable: true,
-                get: function() { return f; },
-                set: function(v) { console.warn('Fetch overwrite ignored on', obj === window ? 'window' : 'self'); }
-              });
-            }
-          } catch (e) {}
-        };
-        protect(window);
-        if (typeof self !== 'undefined') protect(self);
-      })();
+      // Clear all service workers to fix "Unexpected token <" caused by stale PWA cache
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for(let registration of registrations) {
+            registration.unregister();
+            console.log('ServiceWorker unregistered');
+          }
+        });
+      }
     </script>
   </head>
   <body>

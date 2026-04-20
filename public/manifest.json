@@ -1,9 +1,9 @@
 {
   "name": "StakeWise - Gestão de Apostas",
   "short_name": "StakeWise",
-  "version": "1.4.1",
+  "version": "1.4.4",
   "description": "Plataforma completa para gestão de apostas esportivas e controle de banca.",
-  "start_url": "/?v=1.4.1",
+  "start_url": "/?v=1.4.4",
   "display": "standalone",
   "background_color": "#121214",
   "theme_color": "#121214",

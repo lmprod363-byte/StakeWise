@@ -94,6 +94,7 @@ export default function App() {
   // Local settings state for inputs (fixes jumpy bug)
   const [localTotal, setLocalTotal] = useState('');
   const [localUnit, setLocalUnit] = useState('');
+  const [localActualBalance, setLocalActualBalance] = useState('');
   const [showAllPercentages, setShowAllPercentages] = useState(false);
   const [manualAiKey, setManualAiKey] = useState(localStorage.getItem('STAKEWISE_CUSTOM_GEMINI_KEY') || '');
 
@@ -207,6 +208,22 @@ export default function App() {
     const total = parseFloat(localTotal) || bankroll.total;
     const unitSize = parseFloat(localUnit) || bankroll.unitSize;
     saveBankroll({ total, unitSize });
+  };
+
+  const syncBalanceAction = () => {
+    const val = localActualBalance.replace(',', '.');
+    const target = parseFloat(val);
+    if (isNaN(target)) {
+      showToast("Insira um valor válido", "info");
+      return;
+    }
+    
+    // Banca Inicial = Saldo Alvo - Lucro Acumulado + Apostas em Aberto
+    const newTotal = target - allTimeStats.totalProfit + allTimeStats.totalPendingStakes;
+    
+    saveBankroll({ total: newTotal, unitSize: bankroll.unitSize });
+    showToast("Saldo sincronizado com sucesso!", "success");
+    setLocalActualBalance('');
   };
 
   // Modal Form State
@@ -464,21 +481,36 @@ export default function App() {
   }, [historyBets]);
 
   const stats = useMemo((): Stats => {
-    const totalBets = filteredBets.length;
     const settledBets = filteredBets.filter(b => b.status !== 'pending');
     const wonBets = filteredBets.filter(b => b.status === 'won' || b.status === 'half_win');
     const totalProfit = settledBets.reduce((acc, b) => acc + b.profit, 0);
     const totalStake = settledBets.reduce((acc, b) => acc + b.stake, 0);
-    const unitsWon = totalProfit / bankroll.unitSize;
     
     return {
-      totalBets,
+      totalBets: filteredBets.length,
       winRate: settledBets.length > 0 ? (wonBets.length / settledBets.length) * 100 : 0,
       totalProfit,
       roi: totalStake > 0 ? (totalProfit / totalStake) * 100 : 0,
-      unitsWon
+      unitsWon: totalProfit / bankroll.unitSize
     };
   }, [filteredBets, bankroll.unitSize]);
+
+  // All-time stats specifically for "Banca Atual" (ignores timeRange/filters)
+  const allTimeStats = useMemo(() => {
+    // Only bets that are NOT deleted
+    const activeBets = bets.filter(b => !b.deleted);
+    const settledBets = activeBets.filter(b => b.status !== 'pending');
+    const pendingBets = activeBets.filter(b => b.status === 'pending');
+    
+    const totalProfit = settledBets.reduce((acc, b) => acc + b.profit, 0);
+    const totalPendingStakes = pendingBets.reduce((acc, b) => acc + b.stake, 0);
+    
+    return {
+      totalProfit,
+      totalPendingStakes,
+      currentBalance: bankroll.total + totalProfit - totalPendingStakes
+    };
+  }, [bets, bankroll.total]);
 
   const chartData = useMemo(() => {
     let cumulative = 0;
@@ -947,7 +979,7 @@ export default function App() {
           <div className="bg-surface rounded-xl p-6 border border-border">
             <p className="text-text-dim text-[10px] font-black uppercase tracking-widest mb-2">Banca Atual</p>
             <p className="text-text-main text-2xl font-extrabold tracking-tight">
-              {formatCurrency(bankroll.total + stats.totalProfit)}
+              {formatCurrency(allTimeStats.currentBalance)}
             </p>
           </div>
           
@@ -981,7 +1013,7 @@ export default function App() {
             </button>
             <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center">
                 <span className="text-[7px] font-black uppercase tracking-widest text-text-dim">Saldo</span>
-                <span className="text-[10px] font-black text-accent">{formatCurrency(bankroll.total + stats.totalProfit)}</span>
+                <span className="text-[10px] font-black text-accent">{formatCurrency(allTimeStats.currentBalance)}</span>
             </div>
             <button 
                 onClick={() => setActiveTab('register')}
@@ -1999,6 +2031,38 @@ export default function App() {
                                 </div>
                             );
                         })}
+                    </div>
+                </div>
+
+                <div className="glass-card p-6 border-accent/20 bg-accent/5">
+                    <h3 className="text-lg font-black uppercase tracking-tighter mb-2 text-accent">Sincronizar Saldo Real</h3>
+                    <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mb-6">
+                        Use esta opção para ajustar sua banca de forma que o "Saldo Atual" do app fique idêntico ao saldo disponível na sua casa de apostas agora.
+                    </p>
+                    
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Seu Saldo Disponível Hoje (já sem as abertas)</label>
+                            <div className="flex gap-2">
+                                <div className="relative flex-1">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm leading-none">R$</span>
+                                    <input 
+                                        type="text" 
+                                        inputMode="decimal"
+                                        placeholder="Ex: 494.27"
+                                        value={localActualBalance}
+                                        onChange={(e) => setLocalActualBalance(e.target.value)}
+                                        className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                    />
+                                </div>
+                                <button 
+                                    onClick={syncBalanceAction}
+                                    className="bg-accent text-bg px-6 rounded-lg font-black uppercase text-[10px] tracking-widest hover:brightness-110 transition-all shadow-lg shadow-accent/20"
+                                >
+                                    Sincronizar
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
