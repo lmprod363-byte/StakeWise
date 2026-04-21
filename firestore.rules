@@ -1,77 +1,49 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Global Safety Net
+    // Helper Primitives
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    
+    // Global Deny
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper Primitives - Updated
-    function isSignedIn() { return request.auth != null; }
-    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
-    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
-    function docOwner(data) { return isSignedIn() && data.get('userId', request.auth.uid) == request.auth.uid; }
-    function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 256; }
-    function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
+    // Connection Test
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
 
-    // 2. Validation Blueprints
+    // Validation
     function isValidUser(data) {
-      return data.keys().hasAll(['total', 'unitSize']) 
-        && data.total is number 
-        && data.unitSize is number
-        && data.total >= 0
-        && data.unitSize >= 0;
+      return data.total is number && data.unitSize is number;
     }
 
-    function isValidBankroll(data) {
-      return data.keys().hasAll(['name', 'total', 'unitSize', 'userId'])
-        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
-        && data.total is number 
-        && data.unitSize is number
-        && data.userId == request.auth.uid
-        && (data.get('updatedAt', null) == null || data.updatedAt == request.time);
-    }
-
-    function isValidBet(data) {
-      // Regras mais relaxadas para compatibilidade com dados legados
-      return (data.get('userId', '') == request.auth.uid)
-        && (data.get('bankrollId', '') is string)
-        && (data.get('odds', 0) is number)
-        && (data.get('stake', 0) is number)
-        && (data.get('profit', 0) is number);
-    }
-
-    // 3. User Settings Match
+    // Matches
     match /users/{userId} {
-      allow get: if isValidId(userId) && isOwner(userId);
-      allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming());
-      allow update: if isValidId(userId) && isOwner(userId) && isValidUser(incoming());
+      allow get, write: if isOwner(userId);
     }
 
-    // 4. Bankrolls Match
     match /bankrolls/{bankrollId} {
-      allow get: if isValidId(bankrollId) && isSignedIn() && docOwner(existing());
-      allow list: if isSignedIn() && docOwner(resource.data);
-      allow create: if isValidId(bankrollId) && isSignedIn() && isValidBankroll(incoming());
-      allow update: if isValidId(bankrollId) && isSignedIn() && docOwner(existing()) && isValidBankroll(incoming());
-      allow delete: if isValidId(bankrollId) && isSignedIn() && docOwner(existing());
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
     }
 
-    // 5. Bets Match
     match /bets/{betId} {
-      allow get: if isValidId(betId) && isSignedIn() && docOwner(existing());
-      allow list: if isSignedIn() && docOwner(resource.data);
-      
-      allow create: if isSignedIn() 
-        && isValidId(betId)
-        && (incoming().userId == request.auth.uid);
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
+    }
 
-      allow update: if isValidId(betId) && isSignedIn()
-        && docOwner(existing())
-        && (incoming().userId == request.auth.uid);
-
-      allow delete: if isValidId(betId) && isSignedIn() && docOwner(existing());
+    match /transactions/{transactionId} {
+      allow get, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.userId == request.auth.uid && request.resource.data.userId == request.auth.uid;
     }
   }
 }

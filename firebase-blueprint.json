@@ -49,6 +49,25 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["name", "total", "unitSize", "userId"]
+    },
+    "Transaction": {
+      "title": "Transaction Record",
+      "description": "Withdrawals, deposits or transfers between bookmakers",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "bankrollId": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" },
+        "amount": { "type": "number" },
+        "type": { "type": "string", "enum": ["withdrawal", "deposit", "transfer"] },
+        "fromBookmaker": { "type": "string" },
+        "toBookmaker": { "type": "string" },
+        "notes": { "type": "string" },
+        "deleted": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "bankrollId", "date", "amount", "type"]
     }
   },
   "firestore": {
@@ -63,6 +82,10 @@
     "/bets/{betId}": {
       "schema": "Bet",
       "description": "Stores individual bet records with owner UID"
+    },
+    "/transactions/{transactionId}": {
+      "schema": "Transaction",
+      "description": "Stores bankroll transactions: withdrawals, deposits, transfers"
     }
   }
 }
