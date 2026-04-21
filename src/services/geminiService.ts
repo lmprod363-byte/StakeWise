@@ -73,6 +73,7 @@ export async function openApiKeySelector() {
 
 export interface ExtractedBet {
   sport: string;
+  league?: string;
   event: string;
   market: string;
   selection: string;
@@ -80,6 +81,8 @@ export interface ExtractedBet {
   stake: number;
   date?: string; // ISO format or descriptive
   isLive?: boolean;
+  betId?: string;
+  bookmaker?: string;
 }
 
 export interface BetOutcome {
@@ -162,20 +165,31 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   
   const currentYear = new Date().getFullYear();
   const todayISO = new Date().toISOString().split('T')[0];
-  const prompt = `Analise este print de aposta esportiva e extraia minuciosamente os dados. 
+  const prompt = `Analise este print de aposta esportiva e extraia minuciosamente todos os dados disponíveis. 
   
-  FOCO EM DATA E HORÁRIO:
+  DADOS REQUERIDOS:
+  1. Esporte: (ex: Futebol, Basquete, E-sports)
+  2. Competição/Liga: (ex: Premier League, NBA, CBLOL) - MUITO IMPORTANTE
+  3. Evento: (ex: Real Madrid x Barcelona)
+  4. Mercado: (ex: Resultado Final, Ambas Marcam, Handicap de Escanteios)
+  5. Seleção: (ex: Real Madrid, Sim, Mais de 2.5)
+  6. Odds: O valor da cotação
+  7. Stake: O valor apostado (em números)
+  8. ID da Aposta: O código de referência ou ID da transação da casa de aposta
+  9. Casa de Aposta: Identifique a marca (ex: Bet365, Betano, Betfair, Sportingbet, Blaze, etc.)
+  
+  DATA E HORÁRIO DO EVENTO:
   1. Identifique a DATA e o HORÁRIO exatos do evento no print. 
   2. Se faltar o ano, use ${currentYear}. 
   3. Formate OBRIGATORIAMENTE em ISO 8601 (YYYY-MM-DDTHH:mm:ss). 
   4. Se houver apenas o horário, assuma a data de hoje (${todayISO}).
-  5. Identifique se é uma "Entrada Ao Vivo" (quando não há horário futuro ou o evento está em andamento). Se não houver horário especificado no print, defina isLive como true.
+  5. Identifique se é uma "Entrada Ao Vivo" (isLive). Se o print mostrar o evento em andamento, o tempo de jogo, ou se não houver um horário futuro claro, defina isLive como true.
   
-  OUTROS DADOS:
-  - Extraia Esporte, Evento, Mercado, Seleção, Odd e Stake.
-  - Se o investimento estiver em reais, extraia o valor numérico.
+  REGRAS DE EXTRAÇÃO:
+  - Seja extremamente fiel ao que está escrito.
+  - Se não encontrar um campo específico, deixe-o vazio ou nulo, mas não invente.
   
-  Responda obrigatoriamente no formato JSON estruturado.`;
+  Responda obrigatoriamente no formato JSON estruturado seguindo o schema.`;
 
   const maxRetries = 3;
   let lastError = null;
@@ -201,13 +215,16 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
             type: Type.OBJECT,
             properties: {
               sport: { type: Type.STRING, description: "Esporte (ex: Futebol, Tênis)" },
+              league: { type: Type.STRING, description: "Liga ou competição (ex: Brasileirão Série A)" },
               event: { type: Type.STRING, description: "Nome do evento (ex: Real Madrid x Barcelona)" },
               market: { type: Type.STRING, description: "Mercado da aposta (ex: Resultado Final, Ambas Marcam)" },
               selection: { type: Type.STRING, description: "Seleção escolhida (ex: Real Madrid, Sim, Over 2.5)" },
               odds: { type: Type.NUMBER, description: "Valor da odd" },
               stake: { type: Type.NUMBER, description: "Valor do investimento (valor numérico)" },
               date: { type: Type.STRING, description: "Data e hora do evento formatada em ISO 8601 (YYYY-MM-DDTHH:mm:ss)" },
-              isLive: { type: Type.BOOLEAN, description: "Verdadeiro se for uma entrada ao vivo ou se o horário não for encontrado" },
+              isLive: { type: Type.BOOLEAN, description: "Verdadeiro se for uma entrada ao vivo" },
+              betId: { type: Type.STRING, description: "ID ou Referência da aposta na casa" },
+              bookmaker: { type: Type.STRING, description: "Nome da casa de aposta identificada" },
             },
             required: ["sport", "event", "market", "selection", "odds", "stake", "isLive"],
           },

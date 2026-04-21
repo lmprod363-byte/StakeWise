@@ -66,7 +66,8 @@ import {
   serverTimestamp,
   getDoc,
   getDocs,
-  getDocFromServer
+  getDocFromServer,
+  deleteField
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, db, signInWithGoogle, signOut, loginWithEmail, registerWithEmail, getRedirectResult } from './lib/firebase';
@@ -231,6 +232,23 @@ export default function App() {
       return;
     }
 
+    // Fetch account-level API Key
+    const fetchUserSettings = async () => {
+      try {
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const cloudKey = userDoc.data().geminiKey;
+          if (cloudKey && cloudKey.length > 20) {
+            localStorage.setItem('STAKEWISE_CUSTOM_GEMINI_KEY', cloudKey);
+            setManualAiKey(cloudKey);
+          }
+        }
+      } catch (e) {
+        console.error("Erro ao carregar chave da nuvem:", e);
+      }
+    };
+    fetchUserSettings();
+
     const bankrollsQuery = query(
       collection(db, 'bankrolls'),
       where('userId', '==', user.uid),
@@ -386,6 +404,7 @@ export default function App() {
   const [betForm, setBetForm] = useState({
     date: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
     sport: 'Futebol',
+    league: '',
     event: '',
     market: '',
     selection: '',
@@ -393,7 +412,9 @@ export default function App() {
     stake: bankroll.unitSize.toString(),
     status: 'pending' as Bet['status'],
     cashoutValue: '',
-    bookmaker: 'Bet365'
+    bookmaker: 'Bet365',
+    betId: '',
+    isLive: false
   });
 
   const DEFAULT_BOOKMAKERS = ['Bet365', 'SuperBet', 'Betano', 'EsportivaBet'];
@@ -539,17 +560,24 @@ export default function App() {
         // Since compressImage returns image/jpeg for standardized compression
         const data = await extractBetFromImage(base64, 'image/jpeg');
 
+        const sanitizedLeague = data.league && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.league.toLowerCase().trim()) ? data.league : '';
+        const sanitizedBetId = data.betId && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.betId.toLowerCase().trim()) ? data.betId : '';
+
         const betData = {
           userId: user?.uid || '',
           bankrollId: activeBankrollId || '',
           date: data.date ? safeNewDate(data.date).toISOString() : new Date().toISOString(),
           sport: data.sport || 'Futebol',
+          league: sanitizedLeague,
           event: data.event || '',
           market: data.market || '',
           selection: data.selection || '',
           odds: data.odds || 0,
           stake: data.stake || bankroll.unitSize,
           status: 'pending' as Bet['status'],
+          bookmaker: data.bookmaker || 'Bet365',
+          betId: sanitizedBetId,
+          isLive: data.isLive || false,
           cashoutValue: null,
           deleted: false,
           createdAt: new Date().toISOString()
@@ -562,11 +590,15 @@ export default function App() {
             ...prev,
             date: data.date ? format(safeNewDate(data.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
             sport: betData.sport,
+            league: betData.league,
             event: betData.event,
             market: betData.market,
             selection: betData.selection,
             odds: betData.odds.toString(),
             stake: betData.stake.toString(),
+            bookmaker: betData.bookmaker,
+            betId: betData.betId,
+            isLive: betData.isLive
           }));
         }
       }
@@ -657,14 +689,26 @@ export default function App() {
   }, [bets, historySearchTerm, historyStatusFilter, activeTab]);
 
   const groupedHistory = useMemo(() => {
-    const groups: { [key: string]: { bets: Bet[], transactions: Transaction[], totalStake: number, totalProfit: number } } = {};
+    const groups: { 
+      [key: string]: { 
+        bets: Bet[], 
+        transactions: Transaction[], 
+        totalStake: number, 
+        totalProfit: number,
+        bookmakerCounts: { [bm: string]: number }
+      } 
+    } = {};
     
     historyBets.forEach(bet => {
         const dateKey = format(safeNewDate(bet.date), 'yyyy-MM-dd');
         if (!groups[dateKey]) {
-            groups[dateKey] = { bets: [], transactions: [], totalStake: 0, totalProfit: 0 };
+            groups[dateKey] = { bets: [], transactions: [], totalStake: 0, totalProfit: 0, bookmakerCounts: {} };
         }
         groups[dateKey].bets.push(bet);
+        
+        const bm = bet.bookmaker || 'Principal';
+        groups[dateKey].bookmakerCounts[bm] = (groups[dateKey].bookmakerCounts[bm] || 0) + 1;
+
         if (bet.status !== 'pending') {
             groups[dateKey].totalStake += bet.stake;
             groups[dateKey].totalProfit += bet.profit;
@@ -675,7 +719,7 @@ export default function App() {
       transactions.filter(t => t.deleted).forEach(t => {
         const dateKey = format(safeNewDate(t.date), 'yyyy-MM-dd');
         if (!groups[dateKey]) {
-          groups[dateKey] = { bets: [], transactions: [], totalStake: 0, totalProfit: 0 };
+          groups[dateKey] = { bets: [], transactions: [], totalStake: 0, totalProfit: 0, bookmakerCounts: {} };
         }
         groups[dateKey].transactions.push(t);
       });
@@ -864,7 +908,10 @@ export default function App() {
           stake: bankroll.unitSize.toString(),
           status: 'pending' as Bet['status'],
           cashoutValue: '',
-          bookmaker: 'Bet365'
+          bookmaker: 'Bet365',
+          league: '',
+          betId: '',
+          isLive: false
         });
       }
       setDuplicateWarning(null);
@@ -1005,8 +1052,9 @@ export default function App() {
       // Lista de campos permitidos pelas regras ATUAIS (sem a atualização do setup)
       const allowedFields = [
         'status', 'profit', 'updatedAt', 'odds', 'stake', 
-        'selection', 'market', 'event', 'sport', 'date', 
-        'deleted', 'cashoutValue', 'notes', 'bookmaker', 'bankrollId', 'userId'
+        'selection', 'market', 'event', 'sport', 'league', 'date', 
+        'deleted', 'cashoutValue', 'notes', 'bookmaker', 'bankrollId', 'userId',
+        'betId', 'isLive'
       ];
 
       // Só envia o que mudou E o que as regras permitem
@@ -1093,14 +1141,19 @@ export default function App() {
     if (!user || selectedBetIds.size === 0) return;
     try {
       const ids = Array.from(selectedBetIds) as string[];
+      const selected = bets.filter(b => selectedBetIds.has(b.id));
+      const allMatch = selected.every(b => b.bookmaker === bookmaker);
+      
+      const targetBookmaker = allMatch ? '' : bookmaker;
+
       for (const id of ids) {
         await updateDoc(doc(db, 'bets', id), {
-          bookmaker,
+          bookmaker: targetBookmaker,
           updatedAt: serverTimestamp()
         });
       }
       setSelectedBetIds(new Set());
-      showToast(`Casa de aposta alterada para ${bookmaker}`);
+      showToast(targetBookmaker === '' ? 'Casa de aposta removida' : `Casa de aposta alterada para ${bookmaker}`);
     } catch (error) {
       console.error("Erro ao atualizar casa em massa:", error);
     }
@@ -1318,7 +1371,7 @@ export default function App() {
           <div className="p-8 border-b border-border text-center">
             <div className="text-accent font-black text-4xl tracking-tighter mb-2 uppercase">StakeWise.</div>
             <p className="text-text-dim text-[10px] font-black uppercase tracking-widest leading-relaxed">
-              Gestão de banca na nuvem v1.4.9
+              Gestão de banca na nuvem v1.5.0
             </p>
           </div>
 
@@ -1456,7 +1509,7 @@ export default function App() {
       {/* Sidebar Navigation (Desktop) */}
       <aside className="hidden lg:flex w-64 bg-bg text-text-dim p-8 flex-col border-r border-border h-screen sticky top-0 overflow-y-auto no-scrollbar">
         <div className="text-accent font-black text-2xl tracking-tighter mb-10 px-2 uppercase">
-          BetStrat.
+          StakeWise.
         </div>
 
         <nav className="space-y-4 flex-1">
@@ -1552,7 +1605,7 @@ export default function App() {
           {bookmakerExposure.length > 0 && (
             <div className="pb-2">
                <p className="text-[10px] font-black uppercase tracking-widest text-text-dim px-2 mb-2">Investido por Casa</p>
-               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+               <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar pr-1">
                   {bookmakerExposure.map(([bm, amount]) => {
                     const style = getBookmakerStyle(bm);
                     return (
@@ -1633,7 +1686,7 @@ export default function App() {
         <div className="flex items-center justify-between w-full">
             <div className="flex flex-col">
                 <div className="text-accent font-black text-lg tracking-tighter uppercase leading-none">
-                  BetStrat.
+                  StakeWise.
                 </div>
                 <button 
                   onClick={() => setIsBankrollMenuOpen(true)}
@@ -1913,6 +1966,7 @@ export default function App() {
                         const betData = {
                            date: safeNewDate(betForm.date).toISOString(),
                            sport: betForm.sport,
+                           league: betForm.league,
                            event: betForm.event,
                            market: betForm.market,
                            selection: betForm.selection,
@@ -1921,6 +1975,8 @@ export default function App() {
                            status: betForm.status,
                            cashoutValue: betForm.cashoutValue ? Number(betForm.cashoutValue) : null,
                            bookmaker: betForm.bookmaker,
+                           betId: betForm.betId,
+                           isLive: betForm.isLive,
                            bankrollId: activeBankrollId || '',
                         };
                         if (editingBetId) {
@@ -1928,219 +1984,268 @@ export default function App() {
                         } else {
                            addBet(betData);
                         }
-                     }} className="glass-card p-8 space-y-8 relative overflow-hidden backdrop-blur-2xl bg-white/[0.02] border-white/5">
+                     }} className="glass-card p-6 md:p-10 space-y-10 relative overflow-hidden backdrop-blur-2xl bg-white/[0.02] border-white/5">
                         {isScanning && (
                            <div className="absolute inset-0 z-20 bg-bg/40 backdrop-blur-[2px] cursor-wait flex items-center justify-center">
                               <div className="flex flex-col items-center gap-4">
                                  <Loader2 className="w-8 h-8 animate-spin text-accent" />
-                                 <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA Preenchendo...</span>
+                                 <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA Preenchendo Automático...</span>
                               </div>
                            </div>
                         )}
-                        <div className="flex items-center justify-between">
-                           <h3 className="text-lg font-black uppercase tracking-tighter flex items-center gap-2">
-                              Preenchimento Manual
-                              {isScanning && <Loader2 className="w-4 h-4 animate-spin text-accent" />}
-                           </h3>
-                           {scanError && <p className="text-loss text-[10px] font-black uppercase tracking-widest">{scanError}</p>}
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                           <InputGroup 
-                              label="Data e Hora" 
-                              type="datetime-local" 
-                              value={betForm.date} 
-                              onChange={(e) => setBetForm({...betForm, date: e.target.value})} 
-                              required 
-                           />
-                           <InputGroup 
-                              label="Esporte" 
-                              type="text" 
-                              list="sports"
-                              placeholder="Futebol, Basquete..."
-                              value={betForm.sport} 
-                              onChange={(e) => setBetForm({...betForm, sport: e.target.value})} 
-                              required 
-                           />
-                           <div className="space-y-2">
-                               <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Casa de Aposta</label>
-                               <div className="grid grid-cols-2 gap-2">
-                                  {userBookmakers.map(b => (
-                                     <button
-                                        key={b}
-                                        type="button"
-                                        onClick={() => {
-                                           setBetForm({...betForm, bookmaker: betForm.bookmaker === b ? '' : b});
-                                           setIsManualBookmaker(false);
-                                        }}
-                                        className={cn(
-                                           "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
-                                           betForm.bookmaker === b 
-                                              ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
-                                              : "bg-surface border-border text-text-dim hover:border-border-hover"
-                                        )}
-                                     >
-                                        {b}
-                                     </button>
-                                  ))}
-                                {isManualBookmaker ? (
-                                  <div className="relative col-span-2">
-                                    <input
-                                      type="text"
-                                      autoFocus
-                                      value={betForm.bookmaker}
-                                      onChange={(e) => setBetForm(prev => ({...prev, bookmaker: e.target.value}))}
-                                      placeholder="Digite a casa..."
-                                      className="w-full px-4 py-3 bg-surface border border-accent text-[10px] font-black uppercase tracking-tight rounded-lg focus:outline-none"
-                                    />
-                                    <button 
-                                      type="button"
-                                      onClick={() => {
-                                        setBetForm(prev => ({...prev, bookmaker: ''}));
-                                        setIsManualBookmaker(false);
-                                      }}
-                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-dim hover:text-loss transition-colors"
-                                    >
-                                      <X className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                     type="button"
-                                     onClick={() => {
-                                       const isCustom = betForm.bookmaker !== '' && !userBookmakers.includes(betForm.bookmaker);
-                                       if (isCustom) {
-                                         setBetForm(prev => ({...prev, bookmaker: ''}));
-                                         setIsManualBookmaker(false);
-                                       } else {
-                                         setIsManualBookmaker(true);
-                                         setBetForm(prev => ({...prev, bookmaker: ''}));
-                                       }
-                                     }}
-                                     className={cn(
-                                        "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
-                                        (betForm.bookmaker !== '' && !userBookmakers.includes(betForm.bookmaker))
-                                           ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
-                                           : "bg-surface border-border text-text-dim hover:border-border-hover"
-                                     )}
-                                  >
-                                     {(betForm.bookmaker !== '' && !userBookmakers.includes(betForm.bookmaker)) ? betForm.bookmaker : "Outra"}
-                                  </button>
-                                )}
-                               </div>
+                        
+                        <div className="flex items-center justify-between border-b border-border pb-6">
+                           <div className="flex items-center gap-4">
+                              <div className="w-12 h-12 bg-accent/10 rounded-2xl flex items-center justify-center border border-accent/20">
+                                 <Edit3 className="w-6 h-6 text-accent" />
+                              </div>
+                              <div>
+                                 <h3 className="text-xl font-black uppercase tracking-tighter">
+                                    {editingBetId ? 'Editar Detalhes' : 'Registro Detalhado'}
+                                 </h3>
+                                 <p className="text-[10px] font-black text-text-dim uppercase tracking-[0.2em]">Configuração manual e ajustes da IA</p>
+                              </div>
                            </div>
-                           <datalist id="sports">
-                              <option value="Futebol" /><option value="Basquete" /><option value="Tênis" /><option value="E-Sports" />
-                           </datalist>
+                           {scanError && (
+                              <div className="px-4 py-2 bg-loss/10 border border-loss/20 rounded-lg">
+                                 <p className="text-loss text-[9px] font-black uppercase tracking-widest leading-none">{scanError}</p>
+                              </div>
+                           )}
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {/* Event Context Section */}
+                        <div className="space-y-6">
+                           <div className="flex items-center gap-2 mb-2">
+                              <Target className="w-4 h-4 text-accent" />
+                              <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Contexto do Evento</span>
+                           </div>
+                           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                              <InputGroup 
+                                 label="Data e Hora" 
+                                 type="datetime-local" 
+                                 value={betForm.date} 
+                                 onChange={(e) => setBetForm({...betForm, date: e.target.value})} 
+                                 required 
+                              />
+                              <InputGroup 
+                                 label="Esporte" 
+                                 type="text" 
+                                 list="sports"
+                                 placeholder="Futebol..."
+                                 value={betForm.sport} 
+                                 onChange={(e) => setBetForm({...betForm, sport: e.target.value})} 
+                                 required 
+                              />
+                              <InputGroup 
+                                 label="Liga / Competição" 
+                                 type="text" 
+                                 placeholder="Ex: Premier League"
+                                 value={betForm.league} 
+                                 onChange={(e) => setBetForm({...betForm, league: e.target.value})} 
+                              />
+                              <InputGroup 
+                                 label="ID / Ref. Aposta" 
+                                 type="text" 
+                                 placeholder="Ex: #20349-X"
+                                 value={betForm.betId} 
+                                 onChange={(e) => setBetForm({...betForm, betId: e.target.value})} 
+                              />
+                           </div>
                            <InputGroup 
-                              label="Evento" 
+                              label="Nome do Evento (Times / Atletas)" 
                               type="text" 
                               placeholder="Ex: Real Madrid x Barcelona"
                               value={betForm.event} 
                               onChange={(e) => setBetForm({...betForm, event: e.target.value})} 
                               required 
                            />
-                           <InputGroup 
-                              label="Mercado" 
-                              type="text" 
-                              list="markets"
-                              placeholder="Ex: Resultado Final"
-                              value={betForm.market} 
-                              onChange={(e) => setBetForm({...betForm, market: e.target.value})} 
-                              required 
-                           />
-                           <datalist id="markets">
-                              {PREDEFINED_MARKETS.map(m => <option key={m} value={m} />)}
-                           </datalist>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                            <div className="space-y-2">
-                               <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Seleção</label>
-                               <input 
-                                  className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-sm font-bold text-text-main"
-                                  type="text" 
-                                  list="selections"
-                                  placeholder="Ex: Real Madrid"
-                                  value={betForm.selection} 
-                                  onChange={(e) => setBetForm({...betForm, selection: e.target.value})} 
-                                  required 
-                               />
-                               <datalist id="selections">
-                                  {PREDEFINED_SELECTIONS.map(s => <option key={s} value={s} />)}
-                               </datalist>
-                            </div>
-                           <InputGroup 
-                              label="Odd" 
-                           type="number" 
-                           step="0.01"
-                           placeholder="Ex: 1.85"
-                           value={betForm.odds} 
-                           onChange={(e) => setBetForm({...betForm, odds: e.target.value})} 
-                           required 
-                           />
-                           <InputGroup 
-                              label="Stake (Investimento)" 
-                           type="number" 
-                           step="0.01"
-                           placeholder="Ex: 20"
-                           value={betForm.stake} 
-                           onChange={(e) => setBetForm({...betForm, stake: e.target.value})} 
-                           required 
-                           />
+                        {/* Selection & Odds Section */}
+                        <div className="grid grid-cols-1 md:grid-cols-12 gap-8 pt-6 border-t border-border/50">
+                           <div className="md:col-span-8 space-y-6">
+                              <div className="flex items-center gap-2 mb-2">
+                                 <Zap className="w-4 h-4 text-accent" />
+                                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Seleção e Estratégia</span>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                 <InputGroup 
+                                    label="Mercado" 
+                                    type="text" 
+                                    list="markets"
+                                    placeholder="Ex: Ambas Marcam"
+                                    value={betForm.market} 
+                                    onChange={(e) => setBetForm({...betForm, market: e.target.value})} 
+                                    required 
+                                 />
+                                 <InputGroup 
+                                    label="Minha Seleção" 
+                                    type="text" 
+                                    list="selections"
+                                    placeholder="Ex: Sim"
+                                    value={betForm.selection} 
+                                    onChange={(e) => setBetForm({...betForm, selection: e.target.value})} 
+                                    required 
+                                 />
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                 <InputGroup 
+                                    label="Odds (Cotação)" 
+                                    type="number" 
+                                    step="0.01"
+                                    placeholder="1.90"
+                                    value={betForm.odds} 
+                                    onChange={(e) => setBetForm({...betForm, odds: e.target.value})} 
+                                    required 
+                                 />
+                                 <InputGroup 
+                                    label="Investimento (Stake)" 
+                                    type="number" 
+                                    step="0.01"
+                                    placeholder="R$ 50,00"
+                                    value={betForm.stake} 
+                                    onChange={(e) => setBetForm({...betForm, stake: e.target.value})} 
+                                    required 
+                                 />
+                              </div>
+                           </div>
+
+                           <div className="md:col-span-4 space-y-6">
+                              <div className="flex items-center gap-2 mb-2">
+                                 <Wallet className="w-4 h-4 text-accent" />
+                                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Plataforma</span>
+                              </div>
+                              <div className="space-y-4">
+                                <label className="text-[10px] font-black text-text-dim uppercase tracking-widest block">Casa de Aposta</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                   {userBookmakers.map(b => (
+                                      <button
+                                         key={b}
+                                         type="button"
+                                         onClick={() => {
+                                            setBetForm({...betForm, bookmaker: betForm.bookmaker === b ? '' : b});
+                                            setIsManualBookmaker(false);
+                                         }}
+                                         className={cn(
+                                            "px-2 py-3 rounded-xl border text-[9px] font-black uppercase tracking-tight transition-all duration-300",
+                                            betForm.bookmaker === b 
+                                               ? "bg-accent text-bg border-accent shadow-lg shadow-accent/20" 
+                                               : "bg-surface border-border text-text-dim hover:border-border-dim/50"
+                                         )}
+                                      >
+                                         {b}
+                                      </button>
+                                   ))}
+                                   <button
+                                      type="button"
+                                      onClick={() => setIsManualBookmaker(!isManualBookmaker)}
+                                      className={cn(
+                                         "px-2 py-3 rounded-xl border text-[9px] font-black uppercase tracking-tight transition-all duration-300",
+                                         isManualBookmaker ? "bg-accent/10 border-accent text-accent" : "bg-surface border-border text-text-dim"
+                                      )}
+                                   >
+                                      {isManualBookmaker ? 'Fechar' : 'Outra'}
+                                   </button>
+                                </div>
+                                {isManualBookmaker && (
+                                   <input
+                                      type="text"
+                                      autoFocus
+                                      value={betForm.bookmaker}
+                                      onChange={(e) => setBetForm(prev => ({...prev, bookmaker: e.target.value}))}
+                                      placeholder="Nome da plataforma..."
+                                      className="w-full px-4 py-3 bg-bg border border-accent/30 text-[10px] font-black uppercase tracking-tight rounded-lg focus:outline-none focus:border-accent"
+                                   />
+                                )}
+                              </div>
+                           </div>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                               <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Status da Aposta</label>
-                               <select 
-                                  className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-sm font-bold text-text-main"
-                                  value={betForm.status}
-                                  onChange={(e) => setBetForm({...betForm, status: e.target.value as Bet['status']})}
-                               >
-                                  <option value="pending">Pendente</option>
-                                  <option value="won">Ganha (Win)</option>
-                                  <option value="half_win">Meio Green (Half Win)</option>
-                                  <option value="lost">Perdida (Loss)</option>
-                                  <option value="half_loss">Meio Red (Half Loss)</option>
-                                  <option value="void">Reembolsada / Anulada (Void)</option>
-                                  <option value="cashout">Cash Out (Encerrada)</option>
-                               </select>
-                            </div>
-                            {betForm.status === 'cashout' && (
-                               <InputGroup 
-                                  label="Valor de Encerramento (Cash Out)" 
-                                  type="number" 
-                                  step="0.01"
-                                  placeholder="Ex: 15.50"
-                                  value={betForm.cashoutValue} 
-                                  onChange={(e) => setBetForm({...betForm, cashoutValue: e.target.value})} 
-                                  required 
-                               />
-                            )}
+                        {/* Status & Options Section */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pt-6 border-t border-border/50">
+                           <div className="space-y-2">
+                              <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Status Inicial</label>
+                              <select 
+                                 className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:ring-4 focus:ring-accent/10 text-sm font-bold text-text-main transition-all"
+                                 value={betForm.status}
+                                 onChange={(e) => setBetForm({...betForm, status: e.target.value as Bet['status']})}
+                              >
+                                 <option value="pending">Pendente</option>
+                                 <option value="won">Ganha (Green)</option>
+                                 <option value="lost">Perdida (Red)</option>
+                                 <option value="half_win">Meio Green</option>
+                                 <option value="half_loss">Meio Red</option>
+                                 <option value="void">Reembolsada</option>
+                                 <option value="cashout">Cash Out</option>
+                              </select>
+                           </div>
+
+                           <div className="flex items-center gap-4 bg-surface p-4 rounded-xl border border-border">
+                              <div className="flex-1">
+                                 <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Aposta Ao Vivo</label>
+                                 <p className="text-[9px] text-text-dim/60 font-medium">Evento em andamento</p>
+                              </div>
+                              <button
+                                 type="button"
+                                 onClick={() => setBetForm({...betForm, isLive: !betForm.isLive})}
+                                 className={cn(
+                                    "w-12 h-6 rounded-full transition-all relative border border-white/5",
+                                    betForm.isLive ? "bg-accent shadow-[0_0_15px_rgba(0,255,149,0.3)]" : "bg-border"
+                                 )}
+                              >
+                                 <div className={cn(
+                                    "absolute top-0.5 w-4.5 h-4.5 rounded-full bg-white shadow-sm transition-all",
+                                    betForm.isLive ? "right-1" : "left-1"
+                                 )} />
+                              </button>
+                           </div>
+
+                           {betForm.status === 'cashout' && (
+                              <InputGroup 
+                                 label="Valor Cash Out" 
+                                 type="number" 
+                                 step="0.01"
+                                 placeholder="0.00"
+                                 value={betForm.cashoutValue} 
+                                 onChange={(e) => setBetForm({...betForm, cashoutValue: e.target.value})} 
+                                 required 
+                              />
+                           )}
                         </div>
 
-                        <div className="pt-6 flex flex-col sm:flex-row gap-4">
-                           <button 
-                              type="button"
-                              onClick={() => {
-                                 setActiveTab('dashboard');
-                                 setEditingBetId(null);
-                              }}
-                              className="flex-1 py-4 border border-border text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-surface transition-all"
-                           >
-                              Cancelar
-                           </button>
-                           <button 
-                              type="submit"
-                              className="flex-1 py-4 bg-accent text-bg text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-lg shadow-accent/20"
-                           >
-                              {editingBetId ? 'Atualizar Aposta' : 'Finalizar Registro'}
-                           </button>
+                        <div className="pt-8 flex flex-col md:flex-row gap-4 items-center justify-between border-t border-border pb-2">
+                           <p className="text-[10px] font-black text-text-dim uppercase tracking-widest">
+                              Certifique-se de que os dados conferem com sua aposta real.
+                           </p>
+                           <div className="flex gap-4 w-full md:w-auto">
+                              <button 
+                                 type="button"
+                                 onClick={() => {
+                                    setActiveTab('dashboard');
+                                    setEditingBetId(null);
+                                 }}
+                                 className="flex-1 md:px-8 py-4 border border-border text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-surface transition-all active:scale-95"
+                              >
+                                 Cancelar
+                              </button>
+                              <button 
+                                 type="submit"
+                                 className="flex-[2] md:px-12 py-4 bg-accent text-bg text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-xl shadow-accent/20 active:scale-95"
+                              >
+                                 {editingBetId ? 'Salvar Alterações' : 'Confirmar e Registrar'}
+                              </button>
+                           </div>
                         </div>
+
+                        <datalist id="sports">
+                           <option value="Futebol" /><option value="Basquete" /><option value="Tênis" /><option value="E-Sports" /><option value="Vôlei" /><option value="MMA" />
+                        </datalist>
+                        <datalist id="markets">
+                           {PREDEFINED_MARKETS.map(m => <option key={m} value={m} />)}
+                        </datalist>
+                        <datalist id="selections">
+                           {PREDEFINED_SELECTIONS.map(s => <option key={s} value={s} />)}
+                        </datalist>
                      </form>
                   </div>
                </div>
@@ -2285,18 +2390,26 @@ export default function App() {
                               <div className="flex flex-wrap items-center gap-2 px-3 py-2 w-full max-h-[120px] overflow-y-auto no-scrollbar">
                                 {userBookmakers.map(bm => {
                                   const style = getBookmakerStyle(bm);
+                                  const selected = bets.filter(b => selectedBetIds.has(b.id));
+                                  const isActive = selected.length > 0 && selected.every(b => b.bookmaker === bm);
+                                  
                                   return (
                                     <button 
                                       key={bm} 
                                       onClick={() => updateBookmakerForSelected(bm)} 
                                       className={cn(
-                                        "bm-chip flex-shrink-0 flex items-center gap-2",
-                                        "bg-white/5 hover:bg-accent/10 border-white/5 hover:border-accent/20",
-                                        style.color
+                                        "bm-chip flex-shrink-0 flex items-center gap-2 transition-all",
+                                        isActive 
+                                          ? "bg-accent/20 border-accent/40 shadow-[0_0_10px_rgba(0,255,149,0.1)] ring-1 ring-accent/30" 
+                                          : "bg-white/5 hover:bg-accent/10 border-white/5 hover:border-accent/20",
+                                        isActive ? style.color : "text-text-dim"
                                       )} 
-                                      title={`Mover para ${bm}`}
+                                      title={isActive ? `Remover ${bm} das apostas` : `Mover para ${bm}`}
                                     >
-                                       <span className="w-1.5 h-1.5 rounded-full bg-current shadow-[0_0_8px_currentColor]" />
+                                       <span className={cn(
+                                         "w-1.5 h-1.5 rounded-full shadow-[0_0_8px_currentColor]",
+                                         isActive ? "bg-accent" : "bg-text-dim/40"
+                                       )} />
                                        {bm}
                                     </button>
                                   );
@@ -2404,8 +2517,28 @@ export default function App() {
                                  isYesterday(safeNewDate(date + 'T00:00:00')) ? 'Ontem' : 
                                  format(safeNewDate(date + 'T00:00:00'), "EEEE, dd 'de' MMMM", { locale: ptBR })}
                               </h3>
-                              <span className="hidden md:inline-flex items-center justify-center bg-accent/10 text-accent px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-widest leading-none shadow-[0_0_15px_rgba(0,255,149,0.1)] border border-accent/20 backdrop-blur-md">
-                                {group.bets.length} {group.bets.length === 1 ? 'entrada' : 'entradas'}
+                              <span className="hidden md:inline-flex items-center gap-2 bg-bg/40 px-3 py-1 rounded-full border border-white/5 backdrop-blur-md">
+                                <span className="text-accent text-[10px] font-black uppercase tracking-widest border-r border-white/10 pr-2">
+                                  {group.bets.length} {group.bets.length === 1 ? 'entrada' : 'entradas'}
+                                </span>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                   {Object.entries(group.bookmakerCounts).map(([bm, count]) => {
+                                      const style = getBookmakerStyle(bm);
+                                      return (
+                                        <div key={bm} className={cn(
+                                          "flex items-center gap-1.5 px-2 py-1 rounded-lg border shadow-sm transition-all hover:scale-105 group/bm cursor-default",
+                                          style.bg, style.border, style.color
+                                        )}>
+                                           <div className={cn("w-4 h-4 flex items-center justify-center rounded-md bg-bg/40 text-[10px] font-black", style.color)}>
+                                              {count}
+                                           </div>
+                                           <span className="text-[7px] font-black uppercase tracking-widest pr-1">
+                                              {bm}
+                                           </span>
+                                        </div>
+                                      );
+                                   })}
+                                </div>
                               </span>
                               {isCollapsed ? (
                                 <ChevronRight className="w-3 h-3 text-white/20" />
@@ -2413,11 +2546,20 @@ export default function App() {
                                 <ChevronDown className="w-3 h-3 text-accent" />
                               )}
                             </div>
-                            <div className="md:hidden mt-1 flex items-center gap-2 opacity-60">
-                               <span className="text-[8px] font-black text-text-dim uppercase tracking-widest">
-                                 {group.bets.length} {group.bets.length === 1 ? 'entrada' : 'entradas'}
-                               </span>
-                            </div>
+                            <div className="md:hidden mt-3 flex flex-wrap items-center gap-1.5">
+                                {Object.entries(group.bookmakerCounts).map(([bm, count]) => {
+                                  const style = getBookmakerStyle(bm);
+                                  return (
+                                    <span key={bm} className={cn(
+                                      "inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border shadow-sm",
+                                      style.bg, style.border, style.color
+                                    )}>
+                                      <span className="text-[10px] font-black leading-none bg-bg/20 w-4 h-4 flex items-center justify-center rounded-md">{count}</span>
+                                      <span className="text-[7px] font-black uppercase tracking-tighter pr-0.5">{bm}</span>
+                                    </span>
+                                  );
+                                })}
+                             </div>
                           </div>
                         </div>
 
@@ -2525,17 +2667,22 @@ export default function App() {
                                                   isSyncing={bet.id === syncingBetId} 
                                                 />
                                               </div>
-                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2">
-                                                {format(safeNewDate(bet.date), "HH:mm")} • {bet.event} • {bet.market}
+                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
+                                                {format(safeNewDate(bet.date), "HH:mm")} 
+                                                {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
+                                                • {bet.event} 
+                                                {bet.league && <span className="opacity-60">• {bet.league}</span>}
+                                                • {bet.market} 
+                                                {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
                                                 {bet.bookmaker && (
                                                   <span className={cn(
-                                                    "inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider border backdrop-blur-sm",
+                                                    "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border transition-all hover:scale-105 shadow-xl",
                                                     getBookmakerStyle(bet.bookmaker).bg,
                                                     getBookmakerStyle(bet.bookmaker).border,
                                                     getBookmakerStyle(bet.bookmaker).color,
                                                     getBookmakerStyle(bet.bookmaker).glow
                                                   )}>
-                                                    <div className={cn("w-1 h-1 rounded-full animate-pulse", getBookmakerStyle(bet.bookmaker).color.replace('text-', 'bg-'))} />
+                                                    <div className={cn("w-2 h-2 rounded-full animate-pulse shadow-[0_0_8px_currentColor] bg-current")} />
                                                     {bet.bookmaker}
                                                   </span>
                                                 )}
@@ -2713,12 +2860,13 @@ export default function App() {
                                           </span>
                                           {bet.bookmaker && (
                                             <span className={cn(
-                                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[8px] font-black uppercase tracking-widest leading-none border shadow-sm",
+                                              "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-widest leading-none border shadow-lg",
                                               getBookmakerStyle(bet.bookmaker).bg,
                                               getBookmakerStyle(bet.bookmaker).border,
-                                              getBookmakerStyle(bet.bookmaker).color
+                                              getBookmakerStyle(bet.bookmaker).color,
+                                              getBookmakerStyle(bet.bookmaker).glow
                                             )}>
-                                              <div className={cn("w-0.5 h-0.5 rounded-full", getBookmakerStyle(bet.bookmaker).color.replace('text-', 'bg-'))} />
+                                              <div className={cn("w-1.5 h-1.5 rounded-full bg-current")} />
                                               {bet.bookmaker}
                                             </span>
                                           )}
@@ -2728,11 +2876,22 @@ export default function App() {
                                    </div>
                                    
                                    <div className="space-y-1">
-                                     <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
-                                       {bet.sport} • {bet.market}
-                                     </p>
-                                     <h4 className="text-base font-black uppercase text-text-main leading-none py-1">{bet.selection}</h4>
-                                     <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight border-t border-border/10 pt-2">{bet.event}</p>
+                                     <div className="flex items-center gap-2 flex-wrap">
+                                        <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
+                                          {bet.sport} • {bet.market}
+                                        </p>
+                                        {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
+                                     </div>
+                                     <h4 className="text-base font-black uppercase text-text-main leading-none py-1 border-b border-border/10 pb-1.5">{bet.selection}</h4>
+                                     <div className="space-y-1 pt-2">
+                                        <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight">{bet.event}</p>
+                                        {(bet.league || bet.betId) && (
+                                          <div className="flex items-center gap-3">
+                                            {bet.league && <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest">Liga: {bet.league}</span>}
+                                            {bet.betId && <span className="text-[8px] font-bold text-text-dim/40 uppercase tracking-tighter">Ref: {bet.betId}</span>}
+                                          </div>
+                                        )}
+                                     </div>
                                    </div>
 
                                    <div className="grid grid-cols-3 gap-2 border-t border-b border-border/30 py-3">
@@ -3592,10 +3751,25 @@ export default function App() {
                                     </div>
                                     <div className="flex gap-2">
                                         <button 
-                                            onClick={() => {
+                                            onClick={async () => {
                                                 if (manualAiKey.trim().length > 20) {
-                                                    localStorage.setItem('STAKEWISE_CUSTOM_GEMINI_KEY', manualAiKey.trim());
-                                                    showToast('Configuração Salva!', 'success');
+                                                    const key = manualAiKey.trim();
+                                                    localStorage.setItem('STAKEWISE_CUSTOM_GEMINI_KEY', key);
+                                                    
+                                                    // Save to Cloud
+                                                    if (user) {
+                                                        try {
+                                                            await setDoc(doc(db, 'users', user.uid), {
+                                                                geminiKey: key
+                                                            }, { merge: true });
+                                                            showToast('Configuração Salva na Nuvem!', 'success');
+                                                        } catch (e) {
+                                                            console.error("Erro ao salvar na nuvem:", e);
+                                                            showToast('Salvo Localmente (Erro na Nuvem)', 'info');
+                                                        }
+                                                    } else {
+                                                        showToast('Configuração Salva Localmente!', 'success');
+                                                    }
                                                 } else {
                                                     showToast('Chave inválida ou muito curta', 'info');
                                                 }
@@ -3606,10 +3780,20 @@ export default function App() {
                                         </button>
                                         {manualAiKey && (
                                             <button 
-                                                onClick={() => {
-                                                    if (confirm('Deseja remover a chave salva localmente?')) {
+                                                onClick={async () => {
+                                                    if (confirm('Deseja remover a chave salva permanentemente?')) {
                                                         localStorage.removeItem('STAKEWISE_CUSTOM_GEMINI_KEY');
                                                         setManualAiKey('');
+                                                        
+                                                        if (user) {
+                                                            try {
+                                                                await setDoc(doc(db, 'users', user.uid), {
+                                                                    geminiKey: deleteField()
+                                                                }, { merge: true });
+                                                            } catch (e) {
+                                                                console.error("Erro ao deletar da nuvem:", e);
+                                                            }
+                                                        }
                                                         showToast('Chave removida', 'info');
                                                     }
                                                 }}
@@ -3654,7 +3838,7 @@ export default function App() {
                     <p className="text-[10px] font-black uppercase tracking-widest text-primary">StakeWise App</p>
                     <div className="flex items-center gap-2">
                         <span className="h-[1px] w-4 bg-primary/20"></span>
-                        <p className="text-[9px] font-bold font-mono text-primary">v1.4.9 (Stable)</p>
+                        <p className="text-[9px] font-bold font-mono text-primary">v1.5.0 (AI & Cloud Update)</p>
                         <span className="h-[1px] w-4 bg-primary/20"></span>
                     </div>
                     <a href="/privacy.html" target="_blank" className="text-[10px] font-black uppercase tracking-widest text-text-dim hover:text-accent mt-2 transition-colors">
@@ -3923,6 +4107,38 @@ export default function App() {
                       </p>
                     )}
                   </div>
+                  <div className="flex items-center gap-4 bg-surface/50 p-3 rounded-2xl border border-border">
+                    <div className="flex flex-col">
+                      <span className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Aplicar a todos:</span>
+                      <div className="flex items-center gap-2">
+                        <select 
+                          className="bg-bg border border-border rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-tight text-text-main focus:border-accent outline-none"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) return;
+                            setBulkQueue(bulkQueue.map(b => ({ ...b, bookmaker: val })));
+                          }}
+                        >
+                          <option value="">Casa de Aposta...</option>
+                          {userBookmakers.map(bm => <option key={bm} value={bm}>{bm}</option>)}
+                        </select>
+                        <select 
+                          className="bg-bg border border-border rounded-lg px-3 py-1.5 text-[10px] font-black uppercase tracking-tight text-text-main focus:border-accent outline-none"
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (!val) return;
+                            setBulkQueue(bulkQueue.map(b => ({ ...b, status: val as any })));
+                          }}
+                        >
+                          <option value="">Status...</option>
+                          <option value="pending">Pendente</option>
+                          <option value="won">Ganha</option>
+                          <option value="lost">Perdida</option>
+                          <option value="void">Reembolsada</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
                     <button 
                       onClick={() => setBulkQueue([])}
                       className="p-2 hover:bg-surface rounded-full transition-colors"
@@ -3931,100 +4147,210 @@ export default function App() {
                     </button>
                   </div>
 
-                  <div className="overflow-y-auto flex-1 p-6 space-y-4">
-                    {bulkQueue.map((bet: any, idx) => (
-                      <div key={idx} className="bg-surface border border-border rounded-xl p-4 grid grid-cols-1 md:grid-cols-5 gap-4 items-center relative overflow-hidden group">
-                        {bet.isLive && (
-                           <div className="absolute top-0 right-10 px-3 py-1 bg-accent/20 border-b border-l border-accent/20 rounded-bl-lg">
-                              <p className="text-[9px] font-black text-accent uppercase tracking-widest flex items-center gap-1">
-                                 <Zap className="w-2.5 h-2.5" />
-                                 Entrada Ao Vivo
-                              </p>
-                           </div>
-                        )}
-                        <div className="md:col-span-1">
-                          <p className="text-[10px] font-black text-accent uppercase tracking-widest mb-1">{bet.sport}</p>
-                          <input 
-                            className="bg-transparent text-sm font-bold w-full focus:outline-none focus:text-accent truncate uppercase"
-                            value={bet.event}
-                            onChange={(e) => {
-                              const newQueue = [...bulkQueue];
-                              newQueue[idx].event = e.target.value;
-                              setBulkQueue(newQueue);
-                            }}
-                          />
-                        </div>
-                        <div>
-                          <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1">Entrada</p>
-                          <input 
-                            className="bg-transparent text-sm font-bold w-full focus:outline-none focus:text-accent truncate uppercase"
-                            value={bet.selection}
-                            onChange={(e) => {
-                              const newQueue = [...bulkQueue];
-                              newQueue[idx].selection = e.target.value;
-                              setBulkQueue(newQueue);
-                            }}
-                          />
-                        </div>
-                        <div>
-                           <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1">Data / Hora</p>
-                           <div className="flex items-center gap-2">
-                              <input 
-                                type="datetime-local"
-                                className="bg-transparent text-xs font-bold w-full focus:outline-none focus:text-accent uppercase text-text-dim"
-                                value={new Date(new Date(bet.date).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
-                                onChange={(e) => {
-                                  const newQueue = [...bulkQueue];
-                                  newQueue[idx].date = new Date(e.target.value).toISOString();
-                                  newQueue[idx].isLive = false; // Manually adjusted date usually means not "live" anymore
-                                  setBulkQueue(newQueue);
-                                }}
-                              />
-                           </div>
-                        </div>
-                        <div className="flex gap-4">
-                          <div>
-                            <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1">Stake</p>
-                            <input 
-                              type="number"
-                              className="bg-transparent text-sm font-bold w-full focus:outline-none focus:text-accent uppercase"
-                              value={bet.stake}
-                              onChange={(e) => {
-                                const newQueue = [...bulkQueue];
-                                newQueue[idx].stake = Number(e.target.value);
-                                setBulkQueue(newQueue);
-                              }}
-                            />
+                    <div className="overflow-y-auto flex-1 p-6 space-y-6">
+                      {bulkQueue.map((bet: any, idx) => (
+                        <div key={idx} className="bg-surface border border-border rounded-2xl p-5 flex flex-col gap-5 relative overflow-hidden group hover:border-accent/30 transition-all shadow-xl bg-white/[0.01]">
+                          <div className="absolute top-0 right-0 w-32 h-32 bg-accent/5 blur-[40px] rounded-full translate-x-16 -translate-y-16" />
+                          
+                          <div className="flex items-start justify-between relative z-10">
+                            <div className="flex-1 space-y-4">
+                              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <div>
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Esporte</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black uppercase text-accent focus:border-accent outline-none shadow-sm"
+                                    value={bet.sport}
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].sport = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                                <div className="md:col-span-2">
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Evento (Jogo)</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
+                                    value={bet.event}
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].event = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Liga / Comp.</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
+                                    value={bet.league || ''}
+                                    placeholder="Ex: Brasileirão"
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].league = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <div>
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Mercado</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
+                                    value={bet.market}
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].market = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Seleção</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
+                                    value={bet.selection}
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].selection = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                                <div>
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">ID Aposta</p>
+                                  <input 
+                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-dim focus:border-accent outline-none uppercase shadow-sm"
+                                    value={bet.betId || ''}
+                                    placeholder="N/A"
+                                    onChange={(e) => {
+                                      const newQueue = [...bulkQueue];
+                                      newQueue[idx].betId = e.target.value;
+                                      setBulkQueue(newQueue);
+                                    }}
+                                  />
+                                </div>
+                                <div className="flex flex-col">
+                                   <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Tipo</p>
+                                   <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newQueue = [...bulkQueue];
+                                        newQueue[idx].isLive = !newQueue[idx].isLive;
+                                        setBulkQueue(newQueue);
+                                      }}
+                                      className={cn(
+                                         "flex-1 px-3 py-1.5 rounded-xl border flex items-center justify-center gap-2 transition-all",
+                                         bet.isLive ? "bg-accent/10 border-accent text-accent" : "bg-bg border-border text-text-dim"
+                                      )}
+                                   >
+                                      <Zap className={cn("w-3 h-3", bet.isLive ? "fill-accent" : "")} />
+                                      <span className="text-[9px] font-black uppercase tracking-tighter">{bet.isLive ? 'Ao Vivo' : 'Pré-Jogo'}</span>
+                                   </button>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-center gap-2 ml-4">
+                               <button 
+                                 type="button"
+                                 onClick={() => {
+                                   const newQueue = bulkQueue.filter((_, i) => i !== idx);
+                                   setBulkQueue(newQueue);
+                                 }}
+                                 className="p-3 bg-loss/10 text-loss rounded-xl hover:bg-loss hover:text-white transition-all shadow-sm"
+                               >
+                                 <Trash2 className="w-4 h-4" />
+                               </button>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1">Odd</p>
-                            <input 
-                              type="number"
-                              className="bg-transparent text-sm font-bold w-full focus:outline-none focus:text-accent uppercase"
-                              value={bet.odds}
-                              onChange={(e) => {
-                                const newQueue = [...bulkQueue];
-                                newQueue[idx].odds = Number(e.target.value);
-                                setBulkQueue(newQueue);
-                              }}
-                            />
+
+                          {/* Details Row */}
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 relative z-10">
+                            <div>
+                               <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Data / Hora</p>
+                               <input 
+                                 type="datetime-local"
+                                 className="w-full bg-bg border border-border rounded-xl px-3 py-2.5 text-[10px] font-black text-text-main focus:border-accent outline-none shadow-sm"
+                                 value={new Date(new Date(bet.date).getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+                                 onChange={(e) => {
+                                   const newQueue = [...bulkQueue];
+                                   newQueue[idx].date = new Date(e.target.value).toISOString();
+                                   newQueue[idx].isLive = false;
+                                   setBulkQueue(newQueue);
+                                 }}
+                               />
+                            </div>
+                            <div>
+                               <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Casa</p>
+                               <select 
+                                 className="w-full bg-bg border border-border rounded-xl px-3 py-2.5 text-[10px] font-black uppercase text-text-main focus:border-accent outline-none shadow-sm"
+                                 value={bet.bookmaker || ''}
+                                 onChange={(e) => {
+                                   const newQueue = [...bulkQueue];
+                                   newQueue[idx].bookmaker = e.target.value;
+                                   setBulkQueue(newQueue);
+                                 }}
+                               >
+                                 <option value="">Principal</option>
+                                 {userBookmakers.map(bm => <option key={bm} value={bm}>{bm}</option>)}
+                               </select>
+                            </div>
+                            <div>
+                               <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Status</p>
+                               <select 
+                                 className={cn(
+                                   "w-full border rounded-xl px-3 py-2.5 text-[10px] font-black uppercase outline-none shadow-sm",
+                                   bet.status === 'won' ? "bg-accent/10 border-accent/20 text-accent" : 
+                                   bet.status === 'lost' ? "bg-loss/10 border-loss/20 text-loss" : 
+                                   "bg-bg border-border text-text-main focus:border-accent"
+                                 )}
+                                 value={bet.status}
+                                 onChange={(e) => {
+                                   const newQueue = [...bulkQueue];
+                                   newQueue[idx].status = e.target.value as any;
+                                   setBulkQueue(newQueue);
+                                 }}
+                               >
+                                 <option value="pending">Pendente</option>
+                                 <option value="won">Ganha</option>
+                                 <option value="lost">Perdida</option>
+                                 <option value="void">Reembolso</option>
+                               </select>
+                            </div>
+                            <div>
+                               <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Stake (R$)</p>
+                               <input 
+                                 type="number"
+                                 step="0.01"
+                                 className="w-full bg-bg border border-border rounded-xl px-3 py-2.5 text-[10px] font-black text-text-main focus:border-accent outline-none shadow-sm"
+                                 value={bet.stake}
+                                 onChange={(e) => {
+                                   const newQueue = [...bulkQueue];
+                                   newQueue[idx].stake = Number(e.target.value);
+                                   setBulkQueue(newQueue);
+                                 }}
+                               />
+                            </div>
+                            <div>
+                               <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Odd</p>
+                               <input 
+                                 type="number"
+                                 step="0.01"
+                                 className="w-full bg-bg border border-border rounded-xl px-3 py-2.5 text-[10px] font-black text-accent focus:border-accent outline-none shadow-sm"
+                                 value={bet.odds}
+                                 onChange={(e) => {
+                                   const newQueue = [...bulkQueue];
+                                   newQueue[idx].odds = Number(e.target.value);
+                                   setBulkQueue(newQueue);
+                                 }}
+                               />
+                            </div>
                           </div>
                         </div>
-                        <div className="flex justify-end">
-                           <button 
-                             type="button"
-                             onClick={() => {
-                               const newQueue = bulkQueue.filter((_, i) => i !== idx);
-                               setBulkQueue(newQueue);
-                             }}
-                             className="p-2 hover:bg-loss/10 text-loss rounded-md transition-colors"
-                           >
-                             <Trash2 className="w-4 h-4" />
-                           </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
 
                   <div className="p-6 border-t border-border bg-surface flex gap-3">
                     <button 
@@ -4659,9 +4985,9 @@ function StatsCard({ title, value, trend, icon }: { title: string, value: string
 function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?: boolean }) {
   if (isSyncing) {
     return (
-      <span className="flex items-center gap-2 px-2.5 py-1 rounded-full text-[9px] font-black tracking-[0.1em] bg-accent/20 text-accent border border-accent/40 shadow-[0_0_15px_rgba(0,255,149,0.1)] animate-pulse">
-        <Loader2 className="w-3 h-3 animate-spin" />
-        SINC...
+      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[8px] font-black tracking-[0.12em] bg-accent/20 text-accent border border-accent/40 shadow-[0_0_10px_rgba(0,255,149,0.1)] animate-pulse uppercase backdrop-blur-md">
+        <Loader2 className="w-2.5 h-2.5 animate-spin" />
+        Sync...
       </span>
     )
   }
@@ -4669,50 +4995,74 @@ function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?:
   const configs = {
     won: { 
       label: 'GREEN', 
-      class: 'bg-accent/10 text-accent border-accent/30 shadow-[0_0_20px_rgba(0,255,149,0.1)]',
-      icon: <CheckCircle2 className="w-3 h-3" />
+      bg: 'bg-accent/15',
+      text: 'text-accent',
+      border: 'border-accent/30',
+      shadow: 'shadow-[0_0_15px_rgba(0,255,149,0.08)]',
+      dotColor: 'bg-accent shadow-[0_0_6px_currentColor]'
     },
     half_win: { 
       label: '½ GREEN', 
-      class: 'bg-accent/10 text-accent border-accent/50 shadow-[0_0_15px_rgba(0,255,149,0.1)]',
-      icon: <div className="text-[8px] font-black leading-none">½</div>
+      bg: 'bg-accent/10',
+      text: 'text-accent/90',
+      border: 'border-accent/20',
+      shadow: 'shadow-[0_0_10px_rgba(0,255,149,0.04)]',
+      dotColor: 'bg-accent/80'
     },
     lost: { 
       label: 'RED', 
-      class: 'bg-loss/10 text-loss border-loss/30 shadow-[0_0_20px_rgba(255,62,62,0.1)]',
-      icon: <XCircle className="w-3 h-3" />
+      bg: 'bg-loss/15',
+      text: 'text-loss',
+      border: 'border-loss/30',
+      shadow: 'shadow-[0_0_15px_rgba(239,68,68,0.08)]',
+      dotColor: 'bg-loss shadow-[0_0_6px_currentColor]'
     },
     half_loss: { 
       label: '½ RED', 
-      class: 'bg-loss/10 text-loss border-loss/50 shadow-[0_0_15px_rgba(255,62,62,0.1)]',
-      icon: <div className="text-[8px] font-black leading-none">½</div>
+      bg: 'bg-loss/10',
+      text: 'text-loss/90',
+      border: 'border-loss/20',
+      shadow: 'shadow-[0_0_10px_rgba(239,68,68,0.04)]',
+      dotColor: 'bg-loss/80'
     },
     void: { 
-      label: 'VOID', 
-      class: 'bg-refund/10 text-refund border-refund/30 shadow-[0_0_15px_rgba(255,184,0,0.1)]',
-      icon: <HelpCircle className="w-3 h-3" />
+      label: 'VOIDED', 
+      bg: 'bg-refund/15',
+      text: 'text-refund',
+      border: 'border-refund/30',
+      shadow: 'shadow-[0_0_15px_rgba(255,184,0,0.08)]',
+      dotColor: 'bg-refund shadow-[0_0_6px_currentColor]'
     },
     pending: { 
-      label: 'PENDENTE', 
-      class: 'bg-text-dim/10 text-text-dim border-white/5',
-      icon: <Clock className="w-3 h-3" />
+      label: 'PENDING', 
+      bg: 'bg-white/5',
+      text: 'text-text-dim',
+      border: 'border-white/10',
+      shadow: 'shadow-none',
+      dotColor: 'bg-text-dim/30'
     },
     cashout: { 
       label: 'CASH OUT', 
-      class: 'bg-amber-500/10 text-amber-500 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.1)]',
-      icon: <DollarSign className="w-3 h-3" />
+      bg: 'bg-amber-500/15',
+      text: 'text-amber-500',
+      border: 'border-amber-500/30',
+      shadow: 'shadow-[0_0_15px_rgba(245,158,11,0.08)]',
+      dotColor: 'bg-amber-500 shadow-[0_0_6px_currentColor]'
     },
   }
   
-  const config = configs[status]
+  const config = configs[status] || configs.pending;
 
   return (
     <span className={cn(
-      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-[0.1em] border backdrop-blur-sm transition-all duration-300",
-      config.class
+      "relative inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[8px] font-black uppercase tracking-[0.12em] border backdrop-blur-xl transition-all duration-300 cursor-default select-none group",
+      config.bg, config.text, config.border, config.shadow
     )}>
-      {config.icon}
-      {config.label}
+      {/* Glossy overlay effect */}
+      <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-white/5 to-transparent pointer-events-none" />
+      
+      <div className={cn("w-1 h-1 rounded-full shrink-0 transition-transform group-hover:scale-125", config.dotColor)} />
+      <span className="relative z-10">{config.label}</span>
     </span>
   )
 }

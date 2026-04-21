@@ -6,6 +6,7 @@ export interface Bet {
   id: string;
   date: string;
   sport: string;
+  league?: string;
   event: string;
   market: string;
   selection: string;
@@ -16,6 +17,8 @@ export interface Bet {
   bookmaker?: string;
   notes?: string;
   cashoutValue?: number;
+  betId?: string;
+  isLive?: boolean;
   deleted?: boolean;
   bankrollId: string;
 }
