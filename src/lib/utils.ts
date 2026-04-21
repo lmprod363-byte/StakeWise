@@ -25,19 +25,25 @@ export function calculateProfit(stake: number | undefined | null, odds: number |
   const o = Number(odds) || 0;
   const c = Number(cashoutValue) || 0;
 
+  const round = (val: number) => Math.round(val * 100) / 100;
+
   switch (status) {
     case 'won':
-      return s * (o - 1);
+      // Return = Round(Stake * Odds)
+      // Profit = Return - Stake
+      return round(round(s * o) - s);
     case 'lost':
       return -s;
     case 'half_win':
-      return (s / 2) * (o - 1);
+      // Half stake wins at odds, half stake is returned
+      // Return = Round((Stake/2) * Odds) + (Stake/2)
+      return round(round((s / 2) * o) + (s / 2) - s);
     case 'half_loss':
       return -(s / 2);
     case 'void':
       return 0;
     case 'cashout':
-      return c - s;
+      return round(c - s);
     default:
       return 0;
   }

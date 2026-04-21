@@ -17,6 +17,7 @@
       "type": "object",
       "properties": {
         "userId": { "type": "string", "description": "The UID of the user who owns this bet" },
+        "bankrollId": { "type": "string", "description": "The ID of the bankroll this bet belongs to" },
         "date": { "type": "string", "format": "date-time" },
         "sport": { "type": "string" },
         "event": { "type": "string" },
@@ -26,18 +27,38 @@
         "stake": { "type": "number" },
         "status": { "type": "string", "enum": ["pending", "won", "lost", "void", "cashout", "half_win", "half_loss"] },
         "profit": { "type": "number" },
+        "bookmaker": { "type": "string" },
         "cashoutValue": { "type": "number" },
+        "notes": { "type": "string" },
         "deleted": { "type": "boolean" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["userId", "date", "sport", "event", "market", "selection", "odds", "stake", "status", "profit"]
+      "required": ["userId", "bankrollId", "date", "sport", "event", "market", "selection", "odds", "stake", "status", "profit"]
+    },
+    "Bankroll": {
+      "title": "Bankroll Profile",
+      "description": "Individual bankroll configuration",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "total": { "type": "number" },
+        "unitSize": { "type": "number" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "total", "unitSize", "userId"]
     }
   },
   "firestore": {
     "/users/{userId}": {
       "schema": "User",
-      "description": "Stores user settings and bankroll totals"
+      "description": "Stores legacy user settings"
+    },
+    "/bankrolls/{bankrollId}": {
+      "schema": "Bankroll",
+      "description": "Stores individual bankroll configurations"
     },
     "/bets/{betId}": {
       "schema": "Bet",

@@ -12,6 +12,7 @@ export interface Bet {
   stake: number;
   status: BetStatus;
   profit: number;
+  bookmaker?: string;
   notes?: string;
   cashoutValue?: number;
   deleted?: boolean;

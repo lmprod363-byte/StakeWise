@@ -1,0 +1,23 @@
+1596-                                     onClick={() => {
+1597-                                       const isCustom = betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker);
+1598-                                       if (isCustom) {
+1599-                                         setBetForm({...betForm, bookmaker: ''});
+1600-                                       } else {
+1601:                                         const other = window.prompt("Nome da Casa de Aposta:");
+1602-                                         if (other && other.trim()) {
+1603-                                           setBetForm({...betForm, bookmaker: other.trim()});
+1604-                                         } else if (other === "") {
+1605-                                           setBetForm({...betForm, bookmaker: ''});
+1606-                                         }
+--
+3240-                                  onClick={() => {
+3241-                                    const isCustom = betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker);
+3242-                                    if (isCustom) {
+3243-                                      setBetForm({...betForm, bookmaker: ''});
+3244-                                    } else {
+3245:                                      const other = window.prompt("Nome da Casa de Aposta:");
+3246-                                      if (other && other.trim()) {
+3247-                                        setBetForm({...betForm, bookmaker: other.trim()});
+3248-                                      } else if (other === "") {
+3249-                                        setBetForm({...betForm, bookmaker: ''});
+3250-                                      }

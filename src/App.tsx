@@ -14,6 +14,7 @@ import {
   XCircle,
   HelpCircle,
   Clock,
+  Edit3,
   LayoutDashboard,
   Target,
   LogOut,
@@ -46,6 +47,7 @@ import {
 } from 'recharts';
 import { format, isAfter, subDays, subHours, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+import { GoogleAd } from './components/GoogleAd';
 import { 
   collection, 
   onSnapshot, 
@@ -91,6 +93,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash'>('dashboard');
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('all');
   const [editingBetId, setEditingBetId] = useState<string | null>(null);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<null | { confirmed: boolean, data: Omit<Bet, 'id' | 'profit'> }>(null);
   const [isSyncingResults, setIsSyncingResults] = useState(false);
   const [syncingBetId, setSyncingBetId] = useState<string | null>(null);
@@ -124,9 +127,11 @@ export default function App() {
   const [scanError, setScanError] = useState('');
   const [bulkProgress, setBulkProgress] = useState<{ current: number, total: number } | null>(null);
   const [bulkQueue, setBulkQueue] = useState<Omit<Bet, 'id' | 'profit'>[]>([]);
+  const [isManualBookmaker, setIsManualBookmaker] = useState(false);
   const [successToast, setSuccessToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
   const [cashoutBetId, setCashoutBetId] = useState<string | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState("");
+  const [isBankrollMenuOpen, setIsBankrollMenuOpen] = useState(false);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
 
   const toggleDateCollapse = (date: string) => {
@@ -333,8 +338,11 @@ export default function App() {
     odds: '',
     stake: bankroll.unitSize.toString(),
     status: 'pending' as Bet['status'],
-    cashoutValue: ''
+    cashoutValue: '',
+    bookmaker: 'Bet365'
   });
+
+  const BOOKMAKERS = ['Bet365', 'SuperBet', 'Betano', 'EsportivaBet'];
 
   // Keep date updated when register tab opens
   useEffect(() => {
@@ -656,6 +664,7 @@ export default function App() {
         deleted: false
       });
       showToast("Aposta registrada com sucesso!");
+      setIsManualBookmaker(false);
       if (activeTab === 'register') {
         setBetForm({
           date: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
@@ -666,7 +675,8 @@ export default function App() {
           odds: '',
           stake: bankroll.unitSize.toString(),
           status: 'pending' as Bet['status'],
-          cashoutValue: ''
+          cashoutValue: '',
+          bookmaker: 'Bet365'
         });
       }
       setDuplicateWarning(null);
@@ -676,25 +686,36 @@ export default function App() {
   };
 
   const deleteBet = async (id: string) => {
-    if (!user) return;
+    if (!user || !activeBankrollId) return;
     try {
-      // Soft delete
-      await updateDoc(doc(db, 'bets', id), {
+      const bet = bets.find(b => b.id === id);
+      const data: any = {
         deleted: true,
         updatedAt: serverTimestamp()
-      });
+      };
+      // Auto-migrate legacy bets
+      if (bet && !bet.bankrollId) data.bankrollId = activeBankrollId;
+      if (bet && !bet.userId) data.userId = user.uid;
+
+      await updateDoc(doc(db, 'bets', id), data);
     } catch (error) {
       console.error("Erro ao excluir aposta:", error);
     }
   };
 
   const restoreBet = async (id: string) => {
-    if (!user) return;
+    if (!user || !activeBankrollId) return;
     try {
-      await updateDoc(doc(db, 'bets', id), {
+      const bet = bets.find(b => b.id === id);
+      const data: any = {
         deleted: false,
         updatedAt: serverTimestamp()
-      });
+      };
+      // Auto-migrate legacy bets
+      if (bet && !bet.bankrollId) data.bankrollId = activeBankrollId;
+      if (bet && !bet.userId) data.userId = user.uid;
+
+      await updateDoc(doc(db, 'bets', id), data);
       showToast("Aposta restaurada com sucesso!", "success");
     } catch (error: any) {
       console.error("Erro ao restaurar aposta:", error);
@@ -766,7 +787,11 @@ export default function App() {
   };
 
   const updateBet = async (id: string, updatedData: Partial<Bet>) => {
-    if (!user) return;
+    if (!user || !activeBankrollId) {
+      if (!user) return;
+      showToast("Selecione ou crie uma banca primeiro.", "info");
+      return;
+    }
     const bet = bets.find(b => b.id === id);
     if (!bet) return;
 
@@ -776,16 +801,51 @@ export default function App() {
     const finalCashout = updatedData.cashoutValue !== undefined ? updatedData.cashoutValue : bet.cashoutValue;
 
     try {
-      await updateDoc(doc(db, 'bets', id), {
-        ...updatedData,
+      const dataToUpdate: any = {
         profit: calculateProfit(finalStake, finalOdds, finalStatus, finalCashout),
         updatedAt: serverTimestamp()
+      };
+
+      // Garantir que apostas legadas recebam o bankrollId e userId
+      if (!bet.bankrollId) {
+        dataToUpdate.bankrollId = activeBankrollId;
+      }
+      if (!bet.userId) {
+        dataToUpdate.userId = user.uid;
+      }
+
+      // Lista de campos permitidos pelas regras ATUAIS (sem a atualização do setup)
+      const allowedFields = [
+        'status', 'profit', 'updatedAt', 'odds', 'stake', 
+        'selection', 'market', 'event', 'sport', 'date', 
+        'deleted', 'cashoutValue', 'notes', 'bookmaker', 'bankrollId', 'userId'
+      ];
+
+      // Só envia o que mudou E o que as regras permitem
+      Object.entries(updatedData).forEach(([key, value]) => {
+        if (allowedFields.includes(key) && value !== (bet as any)[key]) {
+          dataToUpdate[key] = value;
+        }
       });
+
+      // Remova undefined para evitar erro do Firestore
+      Object.keys(dataToUpdate).forEach(key => dataToUpdate[key] === undefined && delete dataToUpdate[key]);
+
+      if (Object.keys(dataToUpdate).length <= 2) { // Apenas profit e updatedAt? Nada mudou.
+        setEditingBetId(null);
+        return;
+      }
+
+      await updateDoc(doc(db, 'bets', id), dataToUpdate);
       showToast("Aposta atualizada com sucesso!", "info");
-      setActiveTab('bets');
       setEditingBetId(null);
+      setIsManualBookmaker(false);
+      setShowEditModal(false);
     } catch (error) {
       console.error("Erro ao atualizar aposta:", error);
+      if (error instanceof Error && error.message.includes('permissions')) {
+         showToast("Erro de permissão no Firebase. Tente reconfigurar o App nos Ajustes.", "info");
+      }
     }
   };
 
@@ -796,10 +856,16 @@ export default function App() {
     try {
       const ids = Array.from(selectedBetIds) as string[];
       for (const id of ids) {
-        await updateDoc(doc(db, 'bets', id), {
+        const bet = bets.find(b => b.id === id);
+        const data: any = {
           deleted: true,
           updatedAt: serverTimestamp()
-        });
+        };
+        // Auto-migrate
+        if (bet && !bet.bankrollId && activeBankrollId) data.bankrollId = activeBankrollId;
+        if (bet && !bet.userId) data.userId = user.uid;
+
+        await updateDoc(doc(db, 'bets', id), data);
       }
       setSelectedBetIds(new Set());
       showToast("Apostas movidas para a lixeira!");
@@ -816,11 +882,16 @@ export default function App() {
       for (const id of ids) {
         const bet = bets.find(b => b.id === id);
         if (bet) {
-          await updateDoc(doc(db, 'bets', id), {
+          const data: any = {
             status,
             profit: calculateProfit(bet.stake, bet.odds, status, bet.cashoutValue),
             updatedAt: serverTimestamp()
-          });
+          };
+          // Auto-migrate
+          if (!bet.bankrollId && activeBankrollId) data.bankrollId = activeBankrollId;
+          if (!bet.userId) data.userId = user.uid;
+
+          await updateDoc(doc(db, 'bets', id), data);
         }
       }
       setSelectedBetIds(new Set());
@@ -831,7 +902,11 @@ export default function App() {
   };
 
   const updateStatus = async (id: string, status: Bet['status'], cashoutValue?: number) => {
-    if (!user || !activeBankrollId) return;
+    if (!user || !activeBankrollId) {
+      if (!user) return;
+      showToast("Selecione uma banca ativa primeiro.", "info");
+      return;
+    }
     const bet = bets.find(b => b.id === id);
     if (!bet) return;
 
@@ -840,9 +915,13 @@ export default function App() {
       const data: any = {
         status,
         profit: calculateProfit(bet.stake, bet.odds, status, finalCashout),
-        updatedAt: serverTimestamp(),
-        bankrollId: bet.bankrollId || activeBankrollId
+        updatedAt: serverTimestamp()
       };
+      
+      // Auto-migrate legacy bets
+      if (!bet.bankrollId) data.bankrollId = activeBankrollId;
+      if (!bet.userId) data.userId = user.uid;
+      
       if (cashoutValue !== undefined) data.cashoutValue = cashoutValue;
 
       await updateDoc(doc(db, 'bets', id), data);
@@ -1063,20 +1142,20 @@ export default function App() {
         </div>
 
         <nav className="space-y-4 flex-1">
-          <div className="mb-6">
+          <div className="mb-6 group">
              <p className="text-[10px] font-black uppercase tracking-widest text-text-dim px-2 mb-2">Banca Ativa</p>
-             <select 
-               value={activeBankrollId || ''} 
-               onChange={(e) => {
-                 setActiveBankrollId(e.target.value);
-                 localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', e.target.value);
-               }}
-               className="w-full bg-surface border border-border rounded-xl px-3 py-2 text-sm font-bold text-text-main focus:outline-none focus:border-accent appearance-none cursor-pointer"
+             <button 
+                onClick={() => setIsBankrollMenuOpen(true)}
+                className="w-full bg-surface/40 hover:bg-surface/80 border border-border group-hover:border-accent rounded-xl px-4 py-3 flex items-center justify-between transition-all duration-300 backdrop-blur-md group"
              >
-               {bankrolls.map(b => (
-                 <option key={b.id} value={b.id}>{b.name}</option>
-               ))}
-             </select>
+                <div className="flex flex-col items-start overflow-hidden">
+                    <span className="text-[11px] font-black text-text-main uppercase truncate max-w-[140px] tracking-tight">{bankroll.name}</span>
+                    <span className="text-[8px] font-black text-accent uppercase tracking-widest opacity-80">Selecionar Banca</span>
+                </div>
+                <div className="bg-bg/50 p-1.5 rounded-lg border border-border/50 group-hover:border-accent/30 transition-all">
+                  <ChevronDown className="w-3.5 h-3.5 text-text-dim group-hover:text-accent transition-colors" />
+                </div>
+             </button>
           </div>
           
           <button 
@@ -1142,19 +1221,31 @@ export default function App() {
         </nav>
 
         <div className="pt-6 space-y-4">
-          <div className="bg-surface rounded-xl p-6 border border-border group relative">
-            <button 
-              onClick={() => setActiveTab('settings')}
-              className="absolute top-4 right-4 p-2 text-text-dim hover:text-accent hover:bg-accent/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
-              title="Gerenciar Banca"
-            >
-              <Settings2 className="w-4 h-4" />
-            </button>
-            <p className="text-text-dim text-[10px] font-black uppercase tracking-widest mb-2">Banca Atual</p>
-            <p className="text-text-main text-2xl font-extrabold tracking-tight">
+          <motion.div 
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            onClick={() => setActiveTab('settings')}
+            className="stat-card p-6 border-border group relative cursor-pointer bg-surface/50 backdrop-blur-sm overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 blur-[40px] rounded-full translate-x-12 -translate-y-12" />
+            
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-text-dim text-[10px] font-black uppercase tracking-widest">Banca Atual</p>
+              <div className="flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shadow-[0_0_8px_rgba(34,197,94,1)]" />
+                <span className="text-[8px] font-black uppercase text-accent tracking-widest">Ativa</span>
+              </div>
+            </div>
+
+            <p className="text-text-main text-2xl font-extrabold tracking-tight relative z-10">
               {formatCurrency(allTimeStats.currentBalance)}
             </p>
-          </div>
+            
+            <div className="mt-4 pt-4 border-t border-border/10 flex items-center justify-between text-[8px] font-black uppercase tracking-widest text-text-dim/60 group-hover:text-accent transition-colors">
+              <span>Gerenciar Gestão</span>
+              <Settings2 className="w-3 h-3" />
+            </div>
+          </motion.div>
           
           <button 
             onClick={signOut}
@@ -1173,18 +1264,13 @@ export default function App() {
                 <div className="text-accent font-black text-lg tracking-tighter uppercase leading-none">
                   BetStrat.
                 </div>
-                <select 
-                    value={activeBankrollId || ''} 
-                    onChange={(e) => {
-                        setActiveBankrollId(e.target.value);
-                        localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', e.target.value);
-                    }}
-                    className="bg-transparent border-none p-0 text-[10px] font-black uppercase tracking-widest text-text-dim mt-1 focus:ring-0 cursor-pointer"
+                <button 
+                  onClick={() => setIsBankrollMenuOpen(true)}
+                  className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-text-dim mt-1 hover:text-accent transition-colors"
                 >
-                    {bankrolls.map(b => (
-                        <option key={b.id} value={b.id}>{b.name}</option>
-                    ))}
-                </select>
+                  {bankroll.name}
+                  <ChevronDown className="w-3 h-3" />
+                </button>
             </div>
             <div className="flex items-center gap-3">
                 <button 
@@ -1445,6 +1531,7 @@ export default function App() {
                            stake: Number(betForm.stake),
                            status: betForm.status,
                            cashoutValue: betForm.cashoutValue ? Number(betForm.cashoutValue) : null,
+                           bookmaker: betForm.bookmaker,
                            bankrollId: activeBankrollId || '',
                         };
                         if (editingBetId) {
@@ -1463,15 +1550,15 @@ export default function App() {
                         )}
                         <div className="flex items-center justify-between">
                            <h3 className="text-lg font-black uppercase tracking-tighter flex items-center gap-2">
-                              {editingBetId ? 'Editar Registro' : 'Preenchimento Manual'}
+                              Preenchimento Manual
                               {isScanning && <Loader2 className="w-4 h-4 animate-spin text-accent" />}
                            </h3>
                            {scanError && <p className="text-loss text-[10px] font-black uppercase tracking-widest">{scanError}</p>}
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                            <InputGroup 
-                              label="Data e Hora do Jogo" 
+                              label="Data e Hora" 
                               type="datetime-local" 
                               value={betForm.date} 
                               onChange={(e) => setBetForm({...betForm, date: e.target.value})} 
@@ -1486,6 +1573,73 @@ export default function App() {
                               onChange={(e) => setBetForm({...betForm, sport: e.target.value})} 
                               required 
                            />
+                           <div className="space-y-2">
+                               <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Casa de Aposta</label>
+                               <div className="grid grid-cols-2 gap-2">
+                                  {BOOKMAKERS.map(b => (
+                                     <button
+                                        key={b}
+                                        type="button"
+                                        onClick={() => {
+                                           setBetForm({...betForm, bookmaker: betForm.bookmaker === b ? '' : b});
+                                           setIsManualBookmaker(false);
+                                        }}
+                                        className={cn(
+                                           "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
+                                           betForm.bookmaker === b 
+                                              ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
+                                              : "bg-surface border-border text-text-dim hover:border-border-hover"
+                                        )}
+                                     >
+                                        {b}
+                                     </button>
+                                  ))}
+                                {isManualBookmaker ? (
+                                  <div className="relative col-span-2">
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      value={betForm.bookmaker}
+                                      onChange={(e) => setBetForm(prev => ({...prev, bookmaker: e.target.value}))}
+                                      placeholder="Digite a casa..."
+                                      className="w-full px-4 py-3 bg-surface border border-accent text-[10px] font-black uppercase tracking-tight rounded-lg focus:outline-none"
+                                    />
+                                    <button 
+                                      type="button"
+                                      onClick={() => {
+                                        setBetForm(prev => ({...prev, bookmaker: ''}));
+                                        setIsManualBookmaker(false);
+                                      }}
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-dim hover:text-loss transition-colors"
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                     type="button"
+                                     onClick={() => {
+                                       const isCustom = betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker);
+                                       if (isCustom) {
+                                         setBetForm(prev => ({...prev, bookmaker: ''}));
+                                         setIsManualBookmaker(false);
+                                       } else {
+                                         setIsManualBookmaker(true);
+                                         setBetForm(prev => ({...prev, bookmaker: ''}));
+                                       }
+                                     }}
+                                     className={cn(
+                                        "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
+                                        (betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker))
+                                           ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
+                                           : "bg-surface border-border text-text-dim hover:border-border-hover"
+                                     )}
+                                  >
+                                     {(betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker)) ? betForm.bookmaker : "Outra"}
+                                  </button>
+                                )}
+                               </div>
+                           </div>
                            <datalist id="sports">
                               <option value="Futebol" /><option value="Basquete" /><option value="Tênis" /><option value="E-Sports" />
                            </datalist>
@@ -1679,6 +1833,7 @@ export default function App() {
               }}
               className="space-y-6"
             >
+              <GoogleAd />
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="relative w-full lg:max-w-sm">
                   <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
@@ -1856,7 +2011,7 @@ export default function App() {
                                     <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em]">Detalhes da Aposta</th>
                                     <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-center">Unidades</th>
                                     <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-center">Odd</th>
-                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-right">Lucro/Perda</th>
+                                    <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-right">Retorno Total</th>
                                     <th className="px-6 py-2 text-[9px] font-black uppercase tracking-[0.2em] text-right">Ações Rápidas</th>
                                   </tr>
                                 </thead>
@@ -1909,8 +2064,14 @@ export default function App() {
                                                   isSyncing={bet.id === syncingBetId} 
                                                 />
                                               </div>
-                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80">
+                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2">
                                                 {format(safeNewDate(bet.date), "HH:mm")} • {bet.event} • {bet.market}
+                                                {bet.bookmaker && (
+                                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-indigo-500/10 border border-indigo-500/20 rounded-md text-[9px] font-black uppercase tracking-wider text-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.05)]">
+                                                    <div className="w-1 h-1 bg-indigo-400 rounded-full animate-pulse" />
+                                                    {bet.bookmaker}
+                                                  </span>
+                                                )}
                                               </div>
                                             </div>
                                           </div>
@@ -1931,7 +2092,17 @@ export default function App() {
                                             (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
                                             bet.status === 'void' ? "text-refund" : "text-text-dim"
                                           )}>
-                                            {bet.status === 'pending' ? <span className="opacity-30">Pendente</span> : (bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
+                                            {bet.status === 'pending' ? <span className="opacity-30">---</span> : formatCurrency(bet.stake + bet.profit)}
+                                            {bet.status !== 'pending' && (
+                                              <div className={cn(
+                                                "text-[9px] font-black uppercase tracking-widest mt-0.5",
+                                                (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
+                                                (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
+                                                bet.status === 'void' ? "text-refund" : "text-text-dim"
+                                              )}>
+                                                {(bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
+                                              </div>
+                                            )}
                                           </div>
                                         </td>
                                         <td className="px-6 py-5 rounded-r-2xl text-right">
@@ -2007,6 +2178,8 @@ export default function App() {
                                                 <button 
                                                   onClick={() => {
                                                       setEditingBetId(bet.id);
+                                                      const isCustom = bet.bookmaker !== '' && !BOOKMAKERS.includes(bet.bookmaker);
+                                                      setIsManualBookmaker(isCustom);
                                                       setBetForm({
                                                           date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
                                                           sport: bet.sport,
@@ -2016,9 +2189,10 @@ export default function App() {
                                                           odds: bet.odds.toString(),
                                                           stake: bet.stake.toString(),
                                                           status: bet.status,
-                                                          cashoutValue: bet.cashoutValue?.toString() || ''
+                                                          cashoutValue: bet.cashoutValue?.toString() || '',
+                                                          bookmaker: bet.bookmaker || 'Bet365'
                                                       });
-                                                      setActiveTab('register');
+                                                      setShowEditModal(true);
                                                   }}
                                                   className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
                                                   title="Editar"
@@ -2061,14 +2235,22 @@ export default function App() {
                                 >
                                    {/* Designer ambient highlight */}
                                    <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
-                                   <div className="flex justify-between items-start mb-2">
+                                   <div className="flex justify-between items-start mb-4">
                                       <div className="flex items-center gap-3">
                                         <button onClick={() => toggleSelectBet(bet.id)} className="transition-transform active:scale-90">
                                            {selectedBetIds.has(bet.id) ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
                                         </button>
-                                        <span className="text-[10px] font-black uppercase tracking-widest text-text-main bg-bg px-2 py-1 rounded border border-border/20">
-                                          {format(safeNewDate(bet.date), "HH:mm")}
-                                        </span>
+                                        <div className="flex flex-col gap-1.5">
+                                          <span className="inline-flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-text-main bg-bg px-2 py-1 rounded-lg border border-border/40 shadow-sm leading-none min-w-[50px]">
+                                            {format(safeNewDate(bet.date), "HH:mm")}
+                                          </span>
+                                          {bet.bookmaker && (
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-indigo-500/10 border border-indigo-500/20 rounded text-[8px] font-black text-indigo-400 uppercase tracking-widest leading-none">
+                                              <div className="w-0.5 h-0.5 bg-indigo-400 rounded-full" />
+                                              {bet.bookmaker}
+                                            </span>
+                                          )}
+                                        </div>
                                       </div>
                                       <StatusBadge status={bet.status} isSyncing={bet.id === syncingBetId} />
                                    </div>
@@ -2093,12 +2275,17 @@ export default function App() {
                                       </div>
                                       <div className="text-center">
                                         <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Retorno</p>
-                                        <p className={cn(
-                                          "text-xs font-mono font-bold",
-                                          bet.status === 'won' ? "text-accent" : bet.status === 'lost' ? "text-loss" : "text-text-dim"
-                                        )}>
-                                          {bet.status === 'pending' ? '-' : formatCurrency(bet.profit)}
+                                        <p className="text-xs font-mono font-bold text-text-main leading-none">
+                                          {bet.status === 'pending' ? '-' : formatCurrency(bet.stake + bet.profit)}
                                         </p>
+                                        {bet.status !== 'pending' && bet.profit !== 0 && (
+                                          <p className={cn(
+                                            "text-[8px] font-bold mt-1",
+                                            bet.profit > 0 ? "text-accent" : "text-loss"
+                                          )}>
+                                            {bet.profit > 0 ? '+' : ''}{formatCurrency(bet.profit)}
+                                          </p>
+                                        )}
                                       </div>
                                    </div>
 
@@ -2126,6 +2313,8 @@ export default function App() {
                                       <div className="flex items-center gap-1">
                                          <button onClick={() => {
                                             setEditingBetId(bet.id);
+                                            const isCustom = bet.bookmaker !== '' && !BOOKMAKERS.includes(bet.bookmaker);
+                                            setIsManualBookmaker(isCustom);
                                             setBetForm({
                                                 date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
                                                 sport: bet.sport,
@@ -2135,9 +2324,10 @@ export default function App() {
                                                 odds: bet.odds.toString(),
                                                 stake: bet.stake.toString(),
                                                 status: bet.status,
-                                                cashoutValue: bet.cashoutValue?.toString() || ''
+                                                cashoutValue: bet.cashoutValue?.toString() || '',
+                                                bookmaker: bet.bookmaker || 'Bet365'
                                             });
-                                            setActiveTab('register');
+                                            setShowEditModal(true);
                                         }} className="p-2 bg-surface rounded-lg border border-border"><Settings2 className="w-4 h-4" /></button>
                                         <button onClick={() => deleteBet(bet.id)} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><Trash2 className="w-4 h-4" /></button>
                                       </div>
@@ -2250,32 +2440,51 @@ export default function App() {
 
                     <div className="space-y-3">
                         {bankrolls.map(b => (
-                            <div key={b.id} className={cn(
-                                "p-4 rounded-xl border flex items-center justify-between transition-all",
-                                b.id === activeBankrollId ? "bg-accent/10 border-accent" : "bg-bg border-border hover:border-text-dim/30"
-                            )}>
+                            <motion.div 
+                                key={b.id} 
+                                whileTap={{ scale: 0.98 }}
+                                className={cn(
+                                    "p-4 rounded-xl border flex items-center justify-between transition-all group relative overflow-hidden",
+                                    b.id === activeBankrollId ? "bg-accent/10 border-accent" : "bg-bg border-border hover:border-text-dim/30"
+                                )}
+                            >
+                                {b.id === activeBankrollId && (
+                                   <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 blur-2xl rounded-full translate-x-8 -translate-y-8" />
+                                )}
                                 <div onClick={() => {
                                     setActiveBankrollId(b.id);
                                     localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', b.id);
-                                }} className="flex-1 cursor-pointer">
+                                    showToast(`Banca "${b.name}" ativada!`);
+                                }} className="flex-1 cursor-pointer relative z-10">
                                     <div className="flex items-center gap-2">
                                         <p className="font-black text-sm uppercase">{b.name}</p>
-                                        {b.id === activeBankrollId && <span className="text-[8px] bg-accent text-bg px-1.5 py-0.5 rounded-full font-black">ATIVA</span>}
+                                        {b.id === activeBankrollId && (
+                                           <span className="text-[7px] bg-accent text-bg px-1.5 py-0.5 rounded-full font-black animate-pulse flex items-center gap-1">
+                                              <Check className="w-2 h-2" />
+                                              ATIVA
+                                           </span>
+                                        )}
                                     </div>
-                                    <p className="text-[10px] font-bold text-text-dim uppercase tracking-widest mt-1">
-                                        Inicial: {formatCurrency(b.total)} • Unidade: {formatCurrency(b.unitSize)}
+                                    <p className="text-[10px] font-bold text-text-dim uppercase tracking-widest mt-1 opacity-60">
+                                        Inicial: {formatCurrency(b.total)} • Unit: {formatCurrency(b.unitSize)}
                                     </p>
                                 </div>
-                                {bankrolls.length > 1 && (
-                                    <button 
-                                        onClick={() => deleteBankroll(b.id)}
-                                        className="p-2 text-text-dim hover:text-loss transition-colors"
-                                        title="Excluir Banca"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
-                                )}
-                            </div>
+                                <div className="flex items-center gap-1 relative z-10">
+                                    {bankrolls.length > 1 && (
+                                        <button 
+                                            onClick={() => deleteBankroll(b.id)}
+                                            className="p-2 text-text-dim hover:text-loss transition-colors hover:bg-loss/10 rounded-lg"
+                                            title="Excluir Banca"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                    <ChevronRight className={cn(
+                                       "w-4 h-4 transition-all duration-300",
+                                       b.id === activeBankrollId ? "text-accent opacity-100" : "text-text-dim opacity-0"
+                                    )} />
+                                </div>
+                            </motion.div>
                         ))}
                     </div>
                 </div>
@@ -2365,28 +2574,37 @@ export default function App() {
                         ).map((pct) => {
                             const value = bankroll.total * (pct / 100);
                             return (
-                                <div key={pct} className="flex flex-col p-4 bg-surface/50 border border-border rounded-xl group hover:border-accent transition-all relative">
+                                <motion.div 
+                                    key={pct} 
+                                    whileTap={{ scale: 0.98 }}
+                                    className="flex flex-col p-4 bg-surface/50 border border-border rounded-xl group hover:border-accent transition-all relative overflow-hidden"
+                                >
+                                    <div className="absolute top-0 right-0 w-16 h-16 bg-accent/5 blur-2xl rounded-full translate-x-8 -translate-y-8" />
                                     <span className="text-[9px] font-black uppercase tracking-widest text-text-dim mb-1">{pct}%</span>
                                     <span className="text-sm font-black font-mono text-accent mb-3">{formatCurrency(value)}</span>
                                     <button 
                                         onClick={() => saveBankroll({ ...bankroll, unitSize: value })}
-                                        className="w-full py-2 bg-surface text-[9px] font-black uppercase tracking-widest text-text-main rounded border border-border hover:border-accent hover:text-accent transition-all"
+                                        className="w-full py-2 bg-surface text-[9px] font-black uppercase tracking-widest text-text-main rounded border border-border hover:border-accent hover:text-accent transition-all relative z-10"
                                     >
                                         Salvar como Unidade
                                     </button>
-                                </div>
+                                </motion.div>
                             );
                         })}
                     </div>
                 </div>
 
-                <div className="glass-card p-6 border-accent/20 bg-accent/5">
-                    <h3 className="text-lg font-black uppercase tracking-tighter mb-2 text-accent">Sincronizar Saldo Real</h3>
-                    <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mb-6">
+                <motion.div 
+                    whileTap={{ scale: 0.99 }}
+                    className="glass-card p-6 border-accent/20 bg-accent/5 relative overflow-hidden"
+                >
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
+                    <h3 className="text-lg font-black uppercase tracking-tighter mb-2 text-accent relative z-10">Sincronizar Saldo Real</h3>
+                    <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mb-6 relative z-10">
                         Use esta opção para ajustar sua banca de forma que o "Saldo Atual" do app fique idêntico ao saldo disponível na sua casa de apostas agora.
                     </p>
                     
-                    <div className="space-y-4">
+                    <div className="space-y-4 relative z-10">
                         <div>
                             <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Seu Saldo Disponível Hoje (já sem as abertas)</label>
                             <div className="flex gap-2">
@@ -2410,7 +2628,7 @@ export default function App() {
                             </div>
                         </div>
                     </div>
-                </div>
+                </motion.div>
 
                 <div className="glass-card p-6 border-accent/20 bg-accent/5">
                     <div className="flex items-center gap-3 mb-4">
@@ -2967,6 +3185,340 @@ export default function App() {
 
       {/* Success Toast Notification */}
       <AnimatePresence>
+        {showEditModal && editingBetId && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+             <motion.div 
+               initial={{ opacity: 0 }}
+               animate={{ opacity: 1 }}
+               exit={{ opacity: 0 }}
+               onClick={() => {
+                 setShowEditModal(false);
+                 setEditingBetId(null);
+               }}
+               className="absolute inset-0 bg-bg/95 backdrop-blur-xl"
+             />
+             <motion.div
+               initial={{ opacity: 0, scale: 0.9, y: 20 }}
+               animate={{ opacity: 1, scale: 1, y: 0 }}
+               exit={{ opacity: 0, scale: 0.9, y: 20 }}
+               className="w-full max-w-2xl glass-card p-0 overflow-hidden relative border-border bg-surface/50 shadow-[0_40px_80px_-15px_rgba(0,0,0,0.6)]"
+             >
+                <div className="p-6 border-b border-border flex items-center justify-between bg-bg/40">
+                   <div className="flex items-center gap-3">
+                      <div className="p-2 bg-accent/10 rounded-lg">
+                         <Edit3 className="w-5 h-5 text-accent" />
+                      </div>
+                      <div>
+                         <h3 className="text-xl font-black uppercase tracking-tighter">Editar Aposta</h3>
+                         <p className="text-[9px] font-black uppercase tracking-[0.2em] text-text-dim opacity-50">Ajuste os detalhes do seu registro</p>
+                      </div>
+                   </div>
+                   <button 
+                     onClick={() => {
+                       setShowEditModal(false);
+                       setEditingBetId(null);
+                     }}
+                     className="text-text-dim hover:text-text-main transition-colors p-2 hover:bg-surface rounded-full"
+                   >
+                      <XCircle className="w-6 h-6" />
+                   </button>
+                </div>
+
+                <div className="p-8 max-h-[75vh] overflow-y-auto custom-scrollbar">
+                   <form onSubmit={(e) => {
+                      e.preventDefault();
+                      const betData = {
+                         date: safeNewDate(betForm.date).toISOString(),
+                         sport: betForm.sport,
+                         event: betForm.event,
+                         market: betForm.market,
+                         selection: betForm.selection,
+                         odds: Number(betForm.odds),
+                         stake: Number(betForm.stake),
+                         status: betForm.status,
+                         cashoutValue: betForm.cashoutValue ? Number(betForm.cashoutValue) : null,
+                         bookmaker: betForm.bookmaker,
+                      };
+                      updateBet(editingBetId, betData);
+                   }} className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <InputGroup 
+                            label="Data e Hora" 
+                            type="datetime-local" 
+                            value={betForm.date} 
+                            onChange={(e) => setBetForm({...betForm, date: e.target.value})} 
+                            required 
+                         />
+                         <div className="space-y-2">
+                            <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Casa de Aposta</label>
+                            <div className="grid grid-cols-2 gap-2">
+                               {BOOKMAKERS.map(b => (
+                                  <button
+                                     key={b}
+                                     type="button"
+                                     onClick={() => {
+                                        setBetForm({...betForm, bookmaker: betForm.bookmaker === b ? '' : b});
+                                        setIsManualBookmaker(false);
+                                     }}
+                                     className={cn(
+                                        "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
+                                        betForm.bookmaker === b 
+                                           ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
+                                           : "bg-surface border-border text-text-dim hover:border-border-hover"
+                                     )}
+                                  >
+                                     {b}
+                                  </button>
+                               ))}
+                               {isManualBookmaker ? (
+                                  <div className="relative col-span-2">
+                                    <input
+                                      type="text"
+                                      autoFocus
+                                      value={betForm.bookmaker}
+                                      onChange={(e) => setBetForm(prev => ({...prev, bookmaker: e.target.value}))}
+                                      placeholder="Digite a casa..."
+                                      className="w-full px-4 py-3 bg-surface border border-accent text-[10px] font-black uppercase tracking-tight rounded-lg focus:outline-none"
+                                    />
+                                    <button 
+                                      type="button"
+                                      onClick={() => {
+                                        setBetForm(prev => ({...prev, bookmaker: ''}));
+                                        setIsManualBookmaker(false);
+                                      }}
+                                      className="absolute right-3 top-1/2 -translate-y-1/2 text-text-dim hover:text-loss transition-colors"
+                                    >
+                                      <X className="w-4 h-4" />
+                                    </button>
+                                  </div>
+                               ) : (
+                                  <button
+                                     type="button"
+                                     onClick={() => {
+                                       const isCustom = betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker);
+                                       if (isCustom) {
+                                         setBetForm(prev => ({...prev, bookmaker: ''}));
+                                         setIsManualBookmaker(false);
+                                       } else {
+                                         setIsManualBookmaker(true);
+                                         setBetForm(prev => ({...prev, bookmaker: ''}));
+                                       }
+                                     }}
+                                     className={cn(
+                                        "px-2 py-2.5 rounded-lg border text-[10px] font-black uppercase tracking-tight transition-all duration-300",
+                                        (betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker))
+                                           ? "bg-accent/10 border-accent text-accent shadow-[0_0_20px_-8px_rgba(34,197,94,0.5)]" 
+                                           : "bg-surface border-border text-text-dim hover:border-border-hover"
+                                     )}
+                                  >
+                                     {(betForm.bookmaker !== '' && !BOOKMAKERS.includes(betForm.bookmaker)) ? betForm.bookmaker : "Outra"}
+                                  </button>
+                               )}
+                            </div>
+                         </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <InputGroup 
+                            label="Esporte" 
+                            type="text" 
+                            placeholder="Futebol, Basquete..."
+                            value={betForm.sport} 
+                            onChange={(e) => setBetForm({...betForm, sport: e.target.value})} 
+                            required 
+                         />
+                         <InputGroup 
+                            label="Evento" 
+                            type="text" 
+                            placeholder="Ex: Real Madrid x Barcelona"
+                            value={betForm.event} 
+                            onChange={(e) => setBetForm({...betForm, event: e.target.value})} 
+                            required 
+                         />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <InputGroup 
+                            label="Mercado" 
+                            type="text" 
+                            placeholder="Ex: Resultado Final"
+                            value={betForm.market} 
+                            onChange={(e) => setBetForm({...betForm, market: e.target.value})} 
+                            required 
+                         />
+                         <InputGroup 
+                            label="Seleção" 
+                            type="text" 
+                            placeholder="Ex: Real Madrid"
+                            value={betForm.selection} 
+                            onChange={(e) => setBetForm({...betForm, selection: e.target.value})} 
+                            required 
+                         />
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <InputGroup 
+                            label="Odd" 
+                            type="number" 
+                            step="0.01"
+                            value={betForm.odds} 
+                            onChange={(e) => setBetForm({...betForm, odds: e.target.value})} 
+                            required 
+                         />
+                         <InputGroup 
+                            label="Stake" 
+                            type="number" 
+                            step="0.01"
+                            value={betForm.stake} 
+                            onChange={(e) => setBetForm({...betForm, stake: e.target.value})} 
+                            required 
+                         />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-6">
+                         <div className="space-y-2">
+                           <label className="text-[10px] font-black text-text-dim uppercase tracking-widest">Status da Aposta</label>
+                           <select 
+                              className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-sm font-bold text-text-main"
+                              value={betForm.status}
+                              onChange={(e) => setBetForm({...betForm, status: e.target.value as Bet['status']})}
+                           >
+                              <option value="pending">Pendente</option>
+                              <option value="won">Ganha (Win)</option>
+                              <option value="half_win">Meio Green (Half Win)</option>
+                              <option value="lost">Perdida (Loss)</option>
+                              <option value="half_loss">Meio Red (Half Loss)</option>
+                              <option value="void">Reembolsada / Anulada (Void)</option>
+                              <option value="cashout">Cash Out (Encerrada)</option>
+                           </select>
+                         </div>
+                      </div>
+
+                      <div className="pt-6 flex gap-4">
+                         <button 
+                            type="button"
+                            onClick={() => {
+                              setShowEditModal(false);
+                              setEditingBetId(null);
+                            }}
+                            className="flex-1 py-4 border border-border text-[10px] font-black uppercase tracking-widest rounded-xl hover:bg-surface transition-all"
+                         >
+                            Cancelar
+                         </button>
+                         <button 
+                            type="submit"
+                            className="flex-[2] py-4 bg-accent text-bg text-[10px] font-black uppercase tracking-widest rounded-xl hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-accent/20"
+                         >
+                            Salvar Alterações
+                         </button>
+                      </div>
+                   </form>
+                </div>
+             </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isBankrollMenuOpen && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsBankrollMenuOpen(false)}
+              className="absolute inset-0 bg-bg/90 backdrop-blur-md"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 30 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 30 }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="stat-card p-0 w-full max-w-sm border-border bg-surface shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] relative overflow-hidden"
+            >
+              <div className="p-6 border-b border-border bg-bg/20 backdrop-blur-xl">
+                 <div className="flex items-center justify-between">
+                    <h3 className="text-xl font-black uppercase tracking-tighter flex items-center gap-2">
+                       <Wallet className="w-5 h-5 text-accent" />
+                       Minhas Bancas
+                    </h3>
+                    <button onClick={() => setIsBankrollMenuOpen(false)} className="text-text-dim hover:text-text-main transition-colors p-1 hover:bg-surface rounded-full">
+                      <XCircle className="w-6 h-6" />
+                    </button>
+                 </div>
+                 <p className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim mt-2 opacity-50">Escolha o ambiente de gestão</p>
+              </div>
+              
+              <div className="p-4 max-h-[450px] overflow-y-auto no-scrollbar space-y-3">
+                {bankrolls.map(b => (
+                  <motion.button
+                    key={b.id}
+                    whileHover={{ x: 5, backgroundColor: 'rgba(255,255,255,0.02)' }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => {
+                      setActiveBankrollId(b.id);
+                      localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', b.id);
+                      setIsBankrollMenuOpen(false);
+                      showToast(`Banca "${b.name}" ativada!`);
+                    }}
+                    className={cn(
+                      "w-full p-5 rounded-2xl border flex items-center justify-between transition-all group overflow-hidden relative",
+                      b.id === activeBankrollId 
+                        ? "bg-accent/10 border-accent shadow-[0_0_30px_-5px_rgba(34,197,94,0.1)]" 
+                        : "bg-surface border-border hover:border-accent/40"
+                    )}
+                  >
+                    {b.id === activeBankrollId && (
+                       <div className="absolute top-0 right-0 w-32 h-32 bg-accent/5 blur-3xl rounded-full" />
+                    )}
+                    <div className="flex flex-col items-start relative z-10">
+                      <div className="flex items-center gap-2">
+                        <span className={cn(
+                           "text-sm font-black uppercase tracking-tight",
+                           b.id === activeBankrollId ? "text-accent" : "text-text-main"
+                        )}>{b.name}</span>
+                        {b.id === activeBankrollId && (
+                          <div className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-[7px] text-bg rounded-full font-black animate-pulse">
+                             <Check className="w-2 h-2" />
+                             ATIVA
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 opacity-60">
+                         <span className="text-[9px] font-bold text-text-dim uppercase tracking-widest">
+                            Unit: {formatCurrency(b.unitSize)}
+                         </span>
+                         <span className="w-1 h-1 bg-border rounded-full" />
+                         <span className="text-[9px] font-bold text-text-dim uppercase tracking-widest">
+                            {(b.total / b.unitSize).toFixed(0)}u
+                         </span>
+                      </div>
+                    </div>
+                    <ChevronRight className={cn(
+                      "w-4 h-4 transition-all duration-300",
+                      b.id === activeBankrollId ? "text-accent translate-x-0 opacity-100" : "text-text-dim opacity-0 -translate-x-2 group-hover:opacity-100 group-hover:translate-x-0"
+                    )} />
+                  </motion.button>
+                ))}
+              </div>
+
+              <div className="p-4 bg-bg/40 border-t border-border">
+                <button 
+                  onClick={() => {
+                    setIsBankrollMenuOpen(false);
+                    setIsAddingBankroll(true);
+                  }}
+                  className="w-full py-4 border-2 border-border border-dashed rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-text-dim hover:border-accent/50 hover:text-accent transition-all hover:bg-accent/5"
+                >
+                  <Plus className="w-4 h-4" />
+                  Criar Novo Ambiente
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {successToast && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.9, y: 20, x: '-50%' }}
@@ -3012,7 +3564,7 @@ function StatsCard({ title, value, trend, icon }: { title: string, value: string
 function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?: boolean }) {
   if (isSyncing) {
     return (
-      <span className="flex items-center gap-2 px-2 py-1 rounded text-[10px] font-black tracking-wider bg-accent/20 text-accent animate-pulse">
+      <span className="flex items-center gap-2 px-2.5 py-1 rounded-full text-[9px] font-black tracking-[0.1em] bg-accent/20 text-accent border border-accent/40 shadow-[0_0_15px_rgba(0,255,149,0.1)] animate-pulse">
         <Loader2 className="w-3 h-3 animate-spin" />
         SINC...
       </span>
@@ -3020,22 +3572,51 @@ function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?:
   }
 
   const configs = {
-    won: { label: 'WIN', class: 'bg-accent/10 text-accent' },
-    half_win: { label: 'HALF WIN', class: 'bg-accent/10 text-accent border border-accent/30' },
-    lost: { label: 'LOSS', class: 'bg-loss/10 text-loss' },
-    half_loss: { label: 'HALF LOSS', class: 'bg-loss/10 text-loss border border-loss/30' },
-    void: { label: 'VOID', class: 'bg-refund/10 text-refund' },
-    pending: { label: 'PENDENTE', class: 'bg-text-dim/10 text-text-dim' },
-    cashout: { label: 'CASH OUT', class: 'bg-amber-500/10 text-amber-500' },
+    won: { 
+      label: 'GREEN', 
+      class: 'bg-accent/10 text-accent border-accent/30 shadow-[0_0_20px_rgba(0,255,149,0.1)]',
+      icon: <CheckCircle2 className="w-3 h-3" />
+    },
+    half_win: { 
+      label: '½ GREEN', 
+      class: 'bg-accent/10 text-accent border-accent/50 shadow-[0_0_15px_rgba(0,255,149,0.1)]',
+      icon: <div className="text-[8px] font-black leading-none">½</div>
+    },
+    lost: { 
+      label: 'RED', 
+      class: 'bg-loss/10 text-loss border-loss/30 shadow-[0_0_20px_rgba(255,62,62,0.1)]',
+      icon: <XCircle className="w-3 h-3" />
+    },
+    half_loss: { 
+      label: '½ RED', 
+      class: 'bg-loss/10 text-loss border-loss/50 shadow-[0_0_15px_rgba(255,62,62,0.1)]',
+      icon: <div className="text-[8px] font-black leading-none">½</div>
+    },
+    void: { 
+      label: 'VOID', 
+      class: 'bg-refund/10 text-refund border-refund/30 shadow-[0_0_15px_rgba(255,184,0,0.1)]',
+      icon: <HelpCircle className="w-3 h-3" />
+    },
+    pending: { 
+      label: 'PENDENTE', 
+      class: 'bg-text-dim/10 text-text-dim border-white/5',
+      icon: <Clock className="w-3 h-3" />
+    },
+    cashout: { 
+      label: 'CASH OUT', 
+      class: 'bg-amber-500/10 text-amber-500 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.1)]',
+      icon: <DollarSign className="w-3 h-3" />
+    },
   }
   
   const config = configs[status]
 
   return (
     <span className={cn(
-      "status-pill px-2 py-1 rounded text-[10px] font-black tracking-wider",
+      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-[0.1em] border backdrop-blur-sm transition-all duration-300",
       config.class
     )}>
+      {config.icon}
       {config.label}
     </span>
   )

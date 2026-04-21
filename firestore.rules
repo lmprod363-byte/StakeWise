@@ -10,7 +10,7 @@ service cloud.firestore {
     function isSignedIn() { return request.auth != null; }
     function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
     function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
-    function docOwner(data) { return isSignedIn() && data.userId == request.auth.uid; }
+    function docOwner(data) { return isSignedIn() && data.get('userId', request.auth.uid) == request.auth.uid; }
     function isValidId(id) { return id is string && id.size() > 0 && id.size() <= 256; }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
@@ -24,55 +24,52 @@ service cloud.firestore {
         && data.unitSize >= 0;
     }
 
-    function isValidBet(data) {
-      return data.keys().hasAll(['userId', 'date', 'sport', 'event', 'market', 'selection', 'odds', 'stake', 'status', 'profit'])
+    function isValidBankroll(data) {
+      return data.keys().hasAll(['name', 'total', 'unitSize', 'userId'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && data.total is number 
+        && data.unitSize is number
         && data.userId == request.auth.uid
-        && data.sport is string && data.sport.size() <= 200
-        && data.event is string && data.event.size() <= 500
-        && data.market is string && data.market.size() <= 200
-        && data.selection is string && data.selection.size() <= 500
-        && data.odds is number && data.odds >= 0.0
-        && data.stake is number && data.stake >= 0
-        && data.status in ['pending', 'won', 'lost', 'void', 'cashout', 'half_win', 'half_loss']
-        && data.profit is number
-        && (data.get('cashoutValue', null) == null || data.get('cashoutValue', 0) is number)
-        && (data.get('notes', null) == null || (data.notes is string && data.notes.size() <= 2000))
-        && data.get('deleted', false) is bool;
+        && (data.get('updatedAt', null) == null || data.updatedAt == request.time);
+    }
+
+    function isValidBet(data) {
+      // Regras mais relaxadas para compatibilidade com dados legados
+      return (data.get('userId', '') == request.auth.uid)
+        && (data.get('bankrollId', '') is string)
+        && (data.get('odds', 0) is number)
+        && (data.get('stake', 0) is number)
+        && (data.get('profit', 0) is number);
     }
 
     // 3. User Settings Match
     match /users/{userId} {
       allow get: if isValidId(userId) && isOwner(userId);
       allow create: if isValidId(userId) && isOwner(userId) && isValidUser(incoming());
-      allow update: if isValidId(userId) && isOwner(userId) && isValidUser(incoming())
-        && (incoming().diff(existing()).affectedKeys().hasOnly(['total', 'unitSize', 'updatedAt']))
-        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isOwner(userId) && isValidUser(incoming());
     }
 
-    // 4. Bets Match
+    // 4. Bankrolls Match
+    match /bankrolls/{bankrollId} {
+      allow get: if isValidId(bankrollId) && isSignedIn() && docOwner(existing());
+      allow list: if isSignedIn() && docOwner(resource.data);
+      allow create: if isValidId(bankrollId) && isSignedIn() && isValidBankroll(incoming());
+      allow update: if isValidId(bankrollId) && isSignedIn() && docOwner(existing()) && isValidBankroll(incoming());
+      allow delete: if isValidId(bankrollId) && isSignedIn() && docOwner(existing());
+    }
+
+    // 5. Bets Match
     match /bets/{betId} {
       allow get: if isValidId(betId) && isSignedIn() && docOwner(existing());
       allow list: if isSignedIn() && docOwner(resource.data);
       
       allow create: if isSignedIn() 
         && isValidId(betId)
-        && isValidBet(incoming())
-        && incoming().createdAt == request.time
-        && incoming().updatedAt == request.time;
+        && (incoming().userId == request.auth.uid);
 
       allow update: if isValidId(betId) && isSignedIn()
         && docOwner(existing())
-        && isValidBet(incoming())
-        && (
-          // General Update
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'status', 'profit', 'updatedAt', 'odds', 'stake', 
-            'selection', 'market', 'event', 'sport', 'date', 'deleted', 'cashoutValue', 'notes'
-          ])
-          && incoming().userId == existing().userId
-          && incoming().get('createdAt', null) == existing().get('createdAt', null)
-          && (incoming().updatedAt == request.time)
-        );
+        && (incoming().userId == request.auth.uid);
 
       allow delete: if isValidId(betId) && isSignedIn() && docOwner(existing());
     }
