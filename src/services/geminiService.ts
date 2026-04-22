@@ -172,8 +172,6 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   DADOS REQUERIDOS:
   1. Esporte: (ex: Futebol, Basquete)
   2. Competição/Liga: (ex: Premier League, NBA)
-     - IMPORTANTE: Se a Competição/Liga não estiver escrita explicitamente no print, mas você identificar o nome dos times e a data da partida, use a ferramenta Google Search para descobrir a qual liga esse jogo pertence naquela data específica. 
-     - Se não houver nomes de times no print ou se for uma aposta de longo prazo sem data clara, ignore esta busca de liga externa.
   3. Evento: (ex: Real Madrid x Barcelona)
   4. Mercado e Seleção (UNIFICADOS): Combine o mercado e a escolha específica em um único campo chamado 'market'. 
      Exemplo: Se o mercado é 'Ambas Marcam' e a seleção é 'Sim', retorne 'Ambas Marcam: Sim'.
@@ -241,7 +239,6 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
           ],
         },
         config: {
-          tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -274,18 +271,22 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message || "";
-      const isQuotaError = errorMsg.includes("429") || errorMsg.includes("quota");
+      const isQuotaError = errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("limit");
       const isInternalError = errorMsg.includes("500") || errorMsg.includes("Internal error");
       const isAuthError = errorMsg.includes("403") || errorMsg.includes("API_KEY") || errorMsg.includes("PERMISSION_DENIED") || errorMsg.includes("400");
       
       console.warn(`Tentativa ${attempt + 1}/${maxRetries + 1} de extração falhou:`, errorMsg);
       
+      if (isQuotaError && attempt === maxRetries) {
+        throw new Error("Limite de requisições excedido. Se você usa uma chave gratuita, aguarde 60 segundos antes de tentar novamente ou verifique se sua chave tem créditos.");
+      }
+
       if (isAuthError && attempt === maxRetries) {
         throw new Error(`Erro de chave de IA: O sistema de compartilhamento precisa ser re-validado. Tente abrir o link novamente.`);
       }
 
       if (attempt < maxRetries) {
-        const waitTime = (isQuotaError || isInternalError) ? 2500 * (attempt + 1) : 1000;
+        const waitTime = (isQuotaError || isInternalError) ? 3000 * (attempt + 1) : 1000;
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
