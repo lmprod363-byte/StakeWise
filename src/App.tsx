@@ -2442,7 +2442,20 @@ export default function App() {
                           fill="url(#profitGradient)" 
                           animationDuration={2000}
                           baseLine={0}
-                          activeDot={{ r: 4, fill: (data: any) => data.payload.profit >= 0 ? '#00FF95' : '#FF3E3E', stroke: '#0B0D11', strokeWidth: 1 }}
+                          activeDot={(props: any) => {
+                            const { cx, cy, payload } = props;
+                            const fill = payload.profit >= 0 ? '#00FF95' : '#FF3E3E';
+                            return (
+                              <circle 
+                                cx={cx} 
+                                cy={cy} 
+                                r={4} 
+                                fill={fill} 
+                                stroke="#0B0D11" 
+                                strokeWidth={1} 
+                              />
+                            );
+                          }}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
