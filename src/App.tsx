@@ -15,6 +15,7 @@ import {
   Save,
   CheckCircle2,
   XCircle,
+  RotateCcw,
   HelpCircle,
   Clock,
   Edit3,
@@ -30,16 +31,34 @@ import {
   Square,
   CheckSquare,
   DollarSign,
-  RotateCcw,
   Share,
   Copy,
   Zap,
   ChevronRight,
   ChevronDown,
   Check,
-  X
+  X,
+  GripVertical,
+  Menu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  DndContext, 
+  closestCenter, 
+  KeyboardSensor, 
+  PointerSensor, 
+  useSensor, 
+  useSensors, 
+  DragEndEvent 
+} from '@dnd-kit/core';
+import { 
+  arrayMove, 
+  SortableContext, 
+  sortableKeyboardCoordinates, 
+  verticalListSortingStrategy, 
+  useSortable 
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { 
   AreaChart, 
   Area, 
@@ -47,7 +66,8 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
-  ResponsiveContainer 
+  ResponsiveContainer,
+  ReferenceLine 
 } from 'recharts';
 import { format, isAfter, subDays, subHours, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -67,7 +87,8 @@ import {
   getDoc,
   getDocs,
   getDocFromServer,
-  deleteField
+  deleteField,
+  writeBatch
 } from 'firebase/firestore';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { auth, db, signInWithGoogle, signOut, loginWithEmail, registerWithEmail, getRedirectResult } from './lib/firebase';
@@ -80,6 +101,7 @@ const BOOKMAKER_CONFIGS: Record<string, { color: string, bg: string, border: str
   'SuperBet': { color: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/40', glow: 'shadow-[0_0_15px_rgba(239,68,68,0.2)]' },
   'Betano': { color: 'text-[#ff7300]', bg: 'bg-[#ff7300]/10', border: 'border-[#ff7300]/40', glow: 'shadow-[0_0_15px_rgba(255,115,0,0.2)]' },
   'EsportivaBet': { color: 'text-[#00a2ff]', bg: 'bg-[#00a2ff]/10', border: 'border-[#00a2ff]/40', glow: 'shadow-[0_0_15px_rgba(0,162,255,0.2)]' },
+  'Geral': { color: 'text-indigo-400', bg: 'bg-indigo-400/10', border: 'border-indigo-400/40', glow: 'shadow-[0_0_15px_rgba(129,140,248,0.2)]' },
   'Outra': { color: 'text-indigo-400', bg: 'bg-indigo-400/10', border: 'border-indigo-400/40', glow: 'shadow-[0_0_15px_rgba(129,140,248,0.2)]' },
 };
 
@@ -114,15 +136,26 @@ export default function App() {
   }, [bankroll.id, activeBankrollId]);
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash' | 'transfers'>('dashboard');
+  const [viewAllBankrolls, setViewAllBankrolls] = useState(false);
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('all');
   const [editingBetId, setEditingBetId] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<null | { confirmed: boolean, data: Omit<Bet, 'id' | 'profit'> }>(null);
   const [isSyncingResults, setIsSyncingResults] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
   const [syncingBetId, setSyncingBetId] = useState<string | null>(null);
   const [selectedBetIds, setSelectedBetIds] = useState<Set<string>>(new Set());
   const [historySearchTerm, setHistorySearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchTerm(historySearchTerm);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [historySearchTerm]);
   const [historyStatusFilter, setHistoryStatusFilter] = useState('Todos');
+  const [historyBookmakerFilter, setHistoryBookmakerFilter] = useState<string[]>([]);
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
   const [showTransactionEditModal, setShowTransactionEditModal] = useState(false);
   const [expandedTransactionGroups, setExpandedTransactionGroups] = useState<Set<string>>(new Set());
@@ -142,7 +175,7 @@ export default function App() {
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
 
   // Email Auth State
-  const [isRegistering, setIsRegistering] = useState(false);
+  const [isAuthRegistering, setIsAuthRegistering] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -168,6 +201,7 @@ export default function App() {
   const [cashoutBetId, setCashoutBetId] = useState<string | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState("");
   const [isBankrollMenuOpen, setIsBankrollMenuOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
 
   const toggleDateCollapse = (date: string) => {
@@ -234,25 +268,38 @@ export default function App() {
 
     // Fetch account-level API Key
     const fetchUserSettings = async () => {
+      if (!user) return;
       try {
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        const userRef = doc(db, 'users', user.uid);
+        const userDoc = await getDoc(userRef);
+        
         if (userDoc.exists()) {
           const cloudKey = userDoc.data().geminiKey;
           if (cloudKey && cloudKey.length > 20) {
             localStorage.setItem('STAKEWISE_CUSTOM_GEMINI_KEY', cloudKey);
             setManualAiKey(cloudKey);
           }
+        } else {
+          // Initialize user doc if it doesn't exist to avoid permission gaps
+          await setDoc(userRef, {
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp()
+          }, { merge: true });
         }
-      } catch (e) {
-        console.error("Erro ao carregar chave da nuvem:", e);
+      } catch (e: any) {
+        // Only log if it's not a missing document issue
+        if (!e?.message?.includes('permissions')) {
+          console.error("Erro ao carregar configurações da nuvem:", e);
+        } else {
+          console.warn("Usuário ainda não possui perfil na nuvem. Criando...");
+        }
       }
     };
     fetchUserSettings();
 
     const bankrollsQuery = query(
       collection(db, 'bankrolls'),
-      where('userId', '==', user.uid),
-      orderBy('createdAt', 'asc')
+      where('userId', '==', user.uid)
     );
 
     const unsubscribeBankrolls = onSnapshot(bankrollsQuery, async (snapshot) => {
@@ -260,6 +307,17 @@ export default function App() {
         ...doc.data(),
         id: doc.id
       })) as Bankroll[];
+
+      // Sort locally to handle documents without 'order' field
+      list.sort((a, b) => {
+        const orderA = a.order ?? 0;
+        const orderB = b.order ?? 0;
+        if (orderA !== orderB) return orderA - orderB;
+        // Fallback to createdAt if order is the same (or missing)
+        const dateA = (a.createdAt as any)?.seconds ?? 0;
+        const dateB = (b.createdAt as any)?.seconds ?? 0;
+        return dateA - dateB;
+      });
 
       if (list.length === 0) {
         if (localStorage.getItem(`MIGRATING_${user.uid}`)) return;
@@ -343,12 +401,23 @@ export default function App() {
         id: doc.id
       })) as Bet[];
 
-      const firstBankrollId = bankrolls[0]?.id;
-      const filtered = allBets.filter(bet => {
-        if (!bet.bankrollId) {
-          // Orphaned bets belong to first bankroll
-          return !activeBankrollId || activeBankrollId === firstBankrollId || activeBankrollId === 'default';
+      // Migration check: Assign bankrollId to bets that don't have one (legacy ONLY)
+      if (bankrolls.length > 0) {
+        const legacyBets = allBets.filter(b => !b.bankrollId || b.bankrollId === "");
+        if (legacyBets.length > 0) {
+          const primaryBankroll = bankrolls.find(b => b.name === 'Principal') || bankrolls[0];
+          if (primaryBankroll) {
+            const batch = writeBatch(db);
+            legacyBets.forEach(b => {
+              batch.update(doc(db, 'bets', b.id), { bankrollId: primaryBankroll.id });
+            });
+            batch.commit().catch(e => console.error("Legacy migration error:", e));
+          }
         }
+      }
+
+      const filtered = allBets.filter(bet => {
+        if (viewAllBankrolls) return true;
         return bet.bankrollId === activeBankrollId;
       });
 
@@ -368,7 +437,10 @@ export default function App() {
         id: doc.id
       })) as Transaction[];
 
-      const filtered = list.filter(t => t.bankrollId === activeBankrollId);
+      const filtered = list.filter(t => {
+        if (viewAllBankrolls) return true;
+        return t.bankrollId === activeBankrollId;
+      });
       setTransactions(filtered);
     });
 
@@ -414,6 +486,7 @@ export default function App() {
     cashoutValue: '',
     bookmaker: 'Bet365',
     betId: '',
+    bankrollId: activeBankrollId || '',
     isLive: false
   });
 
@@ -563,6 +636,8 @@ export default function App() {
         const sanitizedLeague = data.league && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.league.toLowerCase().trim()) ? data.league : '';
         const sanitizedBetId = data.betId && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.betId.toLowerCase().trim()) ? data.betId : '';
 
+        const combinedMarket = [data.market, data.selection].filter(Boolean).join(' • ');
+
         const betData = {
           userId: user?.uid || '',
           bankrollId: activeBankrollId || '',
@@ -570,36 +645,60 @@ export default function App() {
           sport: data.sport || 'Futebol',
           league: sanitizedLeague,
           event: data.event || '',
-          market: data.market || '',
+          market: data.market || combinedMarket,
           selection: data.selection || '',
           odds: data.odds || 0,
           stake: data.stake || bankroll.unitSize,
-          status: 'pending' as Bet['status'],
+          status: (data.status || 'pending') as Bet['status'],
           bookmaker: data.bookmaker || 'Bet365',
           betId: sanitizedBetId,
           isLive: data.isLive || false,
-          cashoutValue: null,
+          cashoutValue: data.cashoutValue || null,
           deleted: false,
           createdAt: new Date().toISOString()
         };
 
-        if (isMultiple) {
-          newBetsQueue.push(betData);
+        const finalProfit = calculateProfit(betData.stake, betData.odds, betData.status, betData.cashoutValue || undefined);
+        const betToSave = { ...betData, profit: finalProfit };
+
+        // Pre-check for exact duplicates...
+        const isDuplicateInState = bets.some(b => 
+           !b.deleted && 
+           b.date === betToSave.date && 
+           b.event.toLowerCase() === betToSave.event.toLowerCase() && 
+           b.market.toLowerCase() === betToSave.market.toLowerCase() &&
+           Math.abs(b.odds - betToSave.odds) < 0.0001
+        );
+        const isDuplicateInQueue = newBetsQueue.some(b => 
+           b.date === betToSave.date && 
+           b.event.toLowerCase() === betToSave.event.toLowerCase() && 
+           b.market.toLowerCase() === betToSave.market.toLowerCase() &&
+           Math.abs(b.odds - betToSave.odds) < 0.0001
+        );
+
+        if (isDuplicateInState || isDuplicateInQueue) {
+           console.warn("Skipping duplicate bet in bulk scan batch");
         } else {
-          setBetForm(prev => ({
-            ...prev,
-            date: data.date ? format(safeNewDate(data.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
-            sport: betData.sport,
-            league: betData.league,
-            event: betData.event,
-            market: betData.market,
-            selection: betData.selection,
-            odds: betData.odds.toString(),
-            stake: betData.stake.toString(),
-            bookmaker: betData.bookmaker,
-            betId: betData.betId,
-            isLive: betData.isLive
-          }));
+           if (isMultiple) {
+             newBetsQueue.push(betToSave);
+           } else {
+             setBetForm(prev => ({
+               ...prev,
+               date: data.date ? format(safeNewDate(data.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
+               sport: betToSave.sport,
+               league: betToSave.league,
+               event: betToSave.event,
+               market: betToSave.market,
+               selection: betToSave.selection,
+               odds: betToSave.odds.toString(),
+               stake: betToSave.stake.toString(),
+               status: betToSave.status,
+               bookmaker: betToSave.bookmaker,
+               betId: betToSave.betId,
+               isLive: betToSave.isLive,
+               cashoutValue: betToSave.cashoutValue?.toString() || ''
+             }));
+           }
         }
       }
       
@@ -647,19 +746,26 @@ export default function App() {
       if (activeTab !== 'trash' && bet.deleted) return false;
       if (activeTab === 'trash' && !bet.deleted) return false;
 
+      // ALWAYS filter by bankroll in standard views unless special toggle is active
+      // (Dashboard and Stats should always be context-aware)
+      if (bet.bankrollId !== activeBankrollId) return false;
+
       const betDate = safeNewDate(bet.date);
       if (timeRange === '24h') return isAfter(betDate, subHours(now, 24));
       if (timeRange === '7d') return isAfter(betDate, subDays(now, 7));
       if (timeRange === '30d') return isAfter(betDate, subDays(now, 30));
       return true;
     });
-  }, [bets, timeRange, activeTab]);
+  }, [bets, timeRange, activeTab, activeBankrollId]);
 
   const historyBets = useMemo(() => {
     return bets.filter(bet => {
         // Handle Trash vs History view
         if (activeTab === 'trash' && !bet.deleted) return false;
         if (activeTab !== 'trash' && bet.deleted) return false;
+
+        // Bankroll Filter
+        if (!viewAllBankrolls && bet.bankrollId !== activeBankrollId) return false;
 
         // Status Filter
         if (historyStatusFilter !== 'Todos') {
@@ -674,9 +780,14 @@ export default function App() {
             if (bet.status !== statusMap[historyStatusFilter]) return false;
         }
 
+        // Bookmaker Filter
+        if (historyBookmakerFilter.length > 0) {
+          if (!historyBookmakerFilter.includes(bet.bookmaker || 'Geral')) return false;
+        }
+
         // Search Filter
-        if (historySearchTerm) {
-            const search = historySearchTerm.toLowerCase();
+        if (debouncedSearchTerm) {
+            const search = debouncedSearchTerm.toLowerCase();
             return (
                 bet.event.toLowerCase().includes(search) ||
                 bet.market.toLowerCase().includes(search) ||
@@ -686,7 +797,7 @@ export default function App() {
 
         return true;
     });
-  }, [bets, historySearchTerm, historyStatusFilter, activeTab]);
+  }, [bets, debouncedSearchTerm, historyStatusFilter, historyBookmakerFilter, activeTab, viewAllBankrolls, activeBankrollId]);
 
   const groupedHistory = useMemo(() => {
     const groups: { 
@@ -706,7 +817,7 @@ export default function App() {
         }
         groups[dateKey].bets.push(bet);
         
-        const bm = bet.bookmaker || 'Principal';
+        const bm = bet.bookmaker || 'Geral';
         groups[dateKey].bookmakerCounts[bm] = (groups[dateKey].bookmakerCounts[bm] || 0) + 1;
 
         if (bet.status !== 'pending') {
@@ -739,40 +850,21 @@ export default function App() {
       winRate: settledBets.length > 0 ? (wonBets.length / settledBets.length) * 100 : 0,
       totalProfit,
       roi: totalStake > 0 ? (totalProfit / totalStake) * 100 : 0,
-      unitsWon: totalProfit / bankroll.unitSize
+      unitsWon: totalProfit / bankroll.unitSize,
+      profitPercentage: bankroll.total > 0 ? (totalProfit / bankroll.total) * 100 : 0
     };
-  }, [filteredBets, bankroll.unitSize]);
+  }, [filteredBets, bankroll.unitSize, bankroll.total]);
 
-  // All-time stats specifically for "Banca Atual" (ignores timeRange/filters)
-  const allTimeStats = useMemo(() => {
-    // Only bets that are NOT deleted
-    const activeBets = bets.filter(b => !b.deleted);
-    const settledBets = activeBets.filter(b => b.status !== 'pending');
-    const pendingBets = activeBets.filter(b => b.status === 'pending');
-    
-    const totalProfit = settledBets.reduce((acc, b) => acc + b.profit, 0);
-    const totalPendingStakes = pendingBets.reduce((acc, b) => acc + b.stake, 0);
-    
-    const totalWithdrawals = transactions.filter(t => t.type === 'withdrawal' && !t.deleted).reduce((acc, t) => acc + t.amount, 0);
-    const totalDeposits = transactions.filter(t => t.type === 'deposit' && !t.deleted).reduce((acc, t) => acc + t.amount, 0);
-    
-    return {
-      totalProfit,
-      pendingCount: pendingBets.length,
-      pendingStake: totalPendingStakes,
-      currentBalance: bankroll.total + totalProfit - totalPendingStakes - totalWithdrawals + totalDeposits
-    };
-  }, [bets, bankroll.total, transactions]);
-
-  const bookmakerBalances = useMemo(() => {
+  const bookmakerBalancesRaw = useMemo(() => {
     const balances: Record<string, number> = {};
     
-    // Initial bankroll starts in Principal pool
-    balances['Principal'] = bankroll.total;
+    // Process actions that affect balance
+    const activeBankrollBets = bets.filter(b => !b.deleted && b.bankrollId === activeBankrollId);
+    const activeBankrollTransactions = transactions.filter(t => t.bankrollId === activeBankrollId && !t.deleted);
 
-    // Apply bets impact (filtered by current bankroll)
-    bets.filter(b => !b.deleted && b.bankrollId === activeBankrollId).forEach(b => {
-      const bm = b.bookmaker || 'Principal';
+    // Apply bets impact
+    activeBankrollBets.forEach(b => {
+      const bm = b.bookmaker || 'Geral';
       if (b.status === 'pending') {
         balances[bm] = (balances[bm] || 0) - b.stake;
       } else {
@@ -780,15 +872,13 @@ export default function App() {
       }
     });
 
-    // Apply transactions (already filtered in the stats, but let's be explicit and safe here)
-    // Removed !t.deleted check so that archived transactions (trash) still count towards the balance,
-    // satisfying the user requirement that history is just for recording, not for altering the balance when deleted/archived.
-    transactions.filter(t => t.bankrollId === activeBankrollId).forEach(t => {
+    // Apply transactions 
+    activeBankrollTransactions.forEach(t => {
       if (t.type === 'deposit') {
-        const bm = t.toBookmaker || 'Principal';
+        const bm = t.toBookmaker || 'Geral';
         balances[bm] = (balances[bm] || 0) + t.amount;
       } else if (t.type === 'withdrawal') {
-        const bm = t.fromBookmaker || 'Principal';
+        const bm = t.fromBookmaker || 'Geral';
         balances[bm] = (balances[bm] || 0) - t.amount;
       } else if (t.type === 'transfer') {
         if (t.fromBookmaker) {
@@ -798,19 +888,39 @@ export default function App() {
           balances[t.toBookmaker] = (balances[t.toBookmaker] || 0) + t.amount;
         }
       } else if (t.type === 'adjustment') {
-        const bm = t.fromBookmaker || 'Principal';
+        const bm = t.fromBookmaker || 'Geral';
         balances[bm] = (balances[bm] || 0) + t.amount;
-        // Ajuste é um remanejamento: o que entra na casa sai do Principal (e vice-versa)
-        if (bm !== 'Principal') {
-          balances['Principal'] = (balances['Principal'] || 0) - t.amount;
-        }
       }
     });
 
-    return Object.entries(balances)
-      .filter(([_, amount]) => Math.abs(amount) > 0.01)
+    return balances;
+  }, [bets, transactions, activeBankrollId]);
+
+  const bookmakerBalances = useMemo(() => {
+    return Object.entries(bookmakerBalancesRaw)
+      .filter(([_, amount]) => Math.abs(amount) > 0.001)
       .sort((a, b) => b[1] - a[1]);
-  }, [bets, transactions, bankroll.total]);
+  }, [bookmakerBalancesRaw]);
+
+  // All-time stats specifically for "Banca Atual" (ignores timeRange/filters)
+  const allTimeStats = useMemo(() => {
+    const activeBets = bets.filter(b => !b.deleted && b.bankrollId === activeBankrollId);
+    const settledBets = activeBets.filter(b => b.status !== 'pending');
+    const pendingBets = activeBets.filter(b => b.status === 'pending');
+    
+    const totalProfit = settledBets.reduce((acc, b) => acc + b.profit, 0);
+    const totalPendingStakes = pendingBets.reduce((acc, b) => acc + b.stake, 0);
+
+    // CRITICAL FIX: The Top Balance is now STICKLY the sum of the VISIBLE lines below it
+    const currentBalance = bookmakerBalances.reduce((acc, [_, bal]) => acc + bal, 0);
+    
+    return {
+      totalProfit,
+      pendingCount: pendingBets.length,
+      pendingStake: totalPendingStakes,
+      currentBalance
+    };
+  }, [bets, bookmakerBalances, activeBankrollId]);
 
   const historyTransactions = useMemo(() => {
     return transactions.filter(t => !t.deleted);
@@ -844,8 +954,8 @@ export default function App() {
 
   const bookmakerExposure = useMemo(() => {
     const exposure: Record<string, number> = {};
-    bets.filter(b => b.status === 'pending' && !b.deleted).forEach(b => {
-      const bm = b.bookmaker || 'Outra';
+    bets.filter(b => b.status === 'pending' && !b.deleted && b.bankrollId === activeBankrollId).forEach(b => {
+      const bm = b.bookmaker || 'Geral';
       exposure[bm] = (exposure[bm] || 0) + b.stake;
     });
     return Object.entries(exposure).sort((a, b) => b[1] - a[1]);
@@ -866,16 +976,32 @@ export default function App() {
   }, [filteredBets]);
 
   const addBet = async (newBet: Omit<Bet, 'id' | 'profit'>, force = false) => {
-    if (!user) return;
+    if (!user || !activeBankrollId || isRegistering) return;
 
-    // Check for duplicates
+    // Check for exact duplicates (prevent re-registering the same ticket)
+    const isExactDuplicate = bets.some(b => 
+      !b.deleted &&
+      b.event.toLowerCase() === newBet.event.toLowerCase() &&
+      b.market.toLowerCase() === newBet.market.toLowerCase() &&
+      b.selection.toLowerCase() === newBet.selection.toLowerCase() &&
+      Math.abs(b.odds - newBet.odds) < 0.0001 &&
+      Math.abs(b.stake - newBet.stake) < 0.0001 &&
+      b.date === newBet.date
+    );
+
+    if (isExactDuplicate) {
+      console.warn("Exact duplicate bet detected, skipping registration.");
+      return;
+    }
+
+    // Check for similar duplicates for warning
     const isDuplicate = bets.some(b => 
       !b.deleted &&
       b.event.toLowerCase() === newBet.event.toLowerCase() &&
       b.market.toLowerCase() === newBet.market.toLowerCase() &&
       b.selection.toLowerCase() === newBet.selection.toLowerCase() &&
-      Math.abs(b.odds - newBet.odds) < 0.001 &&
-      Math.abs(b.stake - newBet.stake) < 0.001
+      Math.abs(b.odds - newBet.odds) < 0.01 &&
+      Math.abs(b.stake - newBet.stake) < 0.01
     );
 
     if (isDuplicate && !force) {
@@ -885,6 +1011,7 @@ export default function App() {
 
     const profit = calculateProfit(newBet.stake, newBet.odds, newBet.status, newBet.cashoutValue);
     
+    setIsRegistering(true);
     try {
       await addDoc(collection(db, 'bets'), {
         ...newBet,
@@ -911,18 +1038,23 @@ export default function App() {
           bookmaker: 'Bet365',
           league: '',
           betId: '',
-          isLive: false
+          isLive: false,
+          bankrollId: activeBankrollId || ''
         });
       }
       setDuplicateWarning(null);
     } catch (error) {
       console.error("Erro ao salvar aposta:", error);
+      showToast("Erro ao salvar aposta.", "info");
+    } finally {
+      setIsRegistering(false);
     }
   };
 
   const deleteBet = async (id: string) => {
     if (!user || !activeBankrollId) return;
     try {
+      showToast("Movendo para a lixeira...", "info");
       const bet = bets.find(b => b.id === id);
       const data: any = {
         deleted: true,
@@ -933,8 +1065,10 @@ export default function App() {
       if (bet && !bet.userId) data.userId = user.uid;
 
       await updateDoc(doc(db, 'bets', id), data);
+      showToast("Aposta movida para a lixeira!");
     } catch (error) {
-      console.error("Erro ao excluir aposta:", error);
+      console.error("Erro ao deletar aposta:", error);
+      showToast("Erro ao arquivar aposta.", "info");
     }
   };
 
@@ -1037,6 +1171,7 @@ export default function App() {
 
     try {
       const dataToUpdate: any = {
+        ...updatedData,
         profit: calculateProfit(finalStake, finalOdds, finalStatus, finalCashout),
         updatedAt: serverTimestamp()
       };
@@ -1086,27 +1221,133 @@ export default function App() {
   };
 
   const deleteSelectedBets = async () => {
-    if (!user || selectedBetIds.size === 0) return;
-    if (!window.confirm(`Deseja mover as ${selectedBetIds.size} apostas selecionadas para a lixeira?`)) return;
+    // 1. Reação Visual Imediata
+    console.log("DEBUG: Clique em excluir detectado");
+    
+    if (!user) {
+      showToast("Ops! Você precisa estar logado.", "info");
+      return;
+    }
+    
+    const count = selectedBetIds.size;
+    if (count === 0) {
+      showToast("Selecione alguma aposta primeiro.", "info");
+      return;
+    }
+    
+    // 2. Confirmação (pode ser o que está bloqueando em alguns navegadores se o confirm for desativado)
+    const proceed = window.confirm(`Deseja mover ${count} aposta(s) para a lixeira?`);
+    if (!proceed) return;
     
     try {
+      showToast(`Processando ${count} exclusões...`, "info");
       const ids = Array.from(selectedBetIds) as string[];
-      for (const id of ids) {
-        const bet = bets.find(b => b.id === id);
-        const data: any = {
-          deleted: true,
-          updatedAt: serverTimestamp()
-        };
-        // Auto-migrate
-        if (bet && !bet.bankrollId && activeBankrollId) data.bankrollId = activeBankrollId;
-        if (bet && !bet.userId) data.userId = user.uid;
+      let batch = writeBatch(db);
+      let batchCount = 0;
 
-        await updateDoc(doc(db, 'bets', id), data);
+      for (const id of ids) {
+        if (!id || typeof id !== 'string') continue;
+        
+        // Buscamos a aposta no estado local para reaproveitar dados se necessário
+        const bet = bets.find(b => b.id === id);
+        
+        // Dados mínimos para exclusão lógica (soft delete)
+        const updateData: any = {
+          deleted: true,
+          updatedAt: serverTimestamp(),
+          userId: user.uid // Garante que o userId exista para as regras de segurança
+        };
+        
+        // Preserva a banca se existir
+        if (bet && bet.bankrollId) updateData.bankrollId = bet.bankrollId;
+        else if (activeBankrollId) updateData.bankrollId = activeBankrollId;
+
+        const docRef = doc(db, 'bets', id);
+        batch.update(docRef, updateData);
+        batchCount++;
+
+        // Limite de lote do Firestore é 500
+        if (batchCount === 490) {
+          await batch.commit();
+          batch = writeBatch(db);
+          batchCount = 0;
+        }
       }
+
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+      
+      // Sucesso total
       setSelectedBetIds(new Set());
-      showToast("Apostas movidas para a lixeira!");
+      showToast(`${count} apostas movidas para a lixeira!`, "success");
+      console.log("DEBUG: Lote de exclusão finalizado com sucesso");
+    } catch (error: any) {
+      console.error("ERRO NO LOTE DE EXCLUSÃO:", error);
+      const msg = error.message || "Erro desconhecido";
+      showToast("Falha ao excluir: " + msg.substring(0, 50), "info");
+    }
+  };
+
+  const restoreSelectedBets = async () => {
+    if (!user || selectedBetIds.size === 0) return;
+    try {
+      showToast("Restaurando apostas...", "info");
+      const ids = Array.from(selectedBetIds) as string[];
+      let batch = writeBatch(db);
+      let count = 0;
+
+      for (const id of ids) {
+        batch.update(doc(db, 'bets', id), {
+          deleted: false,
+          updatedAt: serverTimestamp()
+        });
+        count++;
+        if (count === 499) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+      setSelectedBetIds(new Set());
+      showToast("Apostas restauradas com sucesso!");
     } catch (error) {
-      console.error("Erro ao excluir apostas:", error);
+      console.error("Erro ao restaurar apostas em lote:", error);
+      showToast("Erro ao restaurar apostas.", "info");
+    }
+  };
+
+  const permanentlyDeleteSelectedBets = async () => {
+    if (!user) return;
+    const countSize = selectedBetIds.size;
+    if (countSize === 0) return;
+    
+    if (!window.confirm(`ATENÇÃO: Deseja excluir permanentemente ${countSize} aposta(s)? Esta ação não pode ser desfeita.`)) return;
+    
+    try {
+      showToast("Excluindo permanentemente...", "info");
+      const ids = Array.from(selectedBetIds) as string[];
+      let batch = writeBatch(db);
+      let batchCount = 0;
+
+      for (const id of ids) {
+        if (!id) continue;
+        batch.delete(doc(db, 'bets', id));
+        batchCount++;
+        if (batchCount === 490) {
+          await batch.commit();
+          batch = writeBatch(db);
+          batchCount = 0;
+        }
+      }
+      if (batchCount > 0) await batch.commit();
+      
+      setSelectedBetIds(new Set());
+      showToast(`${countSize} apostas excluídas permanentemente!`, "success");
+    } catch (error: any) {
+      console.error("Erro na exclusão permanente:", error);
+      showToast("Falha na exclusão: " + (error.message || ""), "info");
     }
   };
 
@@ -1143,15 +1384,16 @@ export default function App() {
       const ids = Array.from(selectedBetIds) as string[];
       const selected = bets.filter(b => selectedBetIds.has(b.id));
       const allMatch = selected.every(b => b.bookmaker === bookmaker);
-      
       const targetBookmaker = allMatch ? '' : bookmaker;
 
+      const batch = writeBatch(db);
       for (const id of ids) {
-        await updateDoc(doc(db, 'bets', id), {
+        batch.update(doc(db, 'bets', id), {
           bookmaker: targetBookmaker,
           updatedAt: serverTimestamp()
         });
       }
+      await batch.commit();
       setSelectedBetIds(new Set());
       showToast(targetBookmaker === '' ? 'Casa de aposta removida' : `Casa de aposta alterada para ${bookmaker}`);
     } catch (error) {
@@ -1188,6 +1430,32 @@ export default function App() {
     }
   };
 
+  const sensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handleDragEndBankrolls = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+       const oldIndex = bankrolls.findIndex((b) => b.id === active.id);
+       const newIndex = bankrolls.findIndex((b) => b.id === over.id);
+       const newOrder = arrayMove(bankrolls as Bankroll[], oldIndex, newIndex);
+       
+       try {
+         const batch = writeBatch(db);
+         newOrder.forEach((b: Bankroll, index: number) => {
+           batch.update(doc(db, 'bankrolls', b.id), { order: index });
+         });
+         await batch.commit();
+       } catch (err) {
+         console.error("Error updating bankroll order:", err);
+       }
+    }
+  };
+
   const saveBankroll = async (data: Partial<Bankroll>) => {
     if (!user || !activeBankrollId) return;
     try {
@@ -1208,6 +1476,7 @@ export default function App() {
         total,
         unitSize,
         userId: user.uid,
+        order: bankrolls.length,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
@@ -1227,22 +1496,188 @@ export default function App() {
     if (!window.confirm("Deseja realmente excluir esta banca e todas as suas apostas? Esta ação é irreversível.")) return;
     
     try {
-      const betsToDelete = bets.filter(b => b.bankrollId === id);
-      for (const bet of betsToDelete) {
-        await deleteDoc(doc(db, 'bets', bet.id));
+      showToast("Excluindo banca e dados relacionados...", "info");
+      
+      // Fetch ALL bets for this bankroll across ALL states by querying Firestore directly
+      const q = query(collection(db, 'bets'), where('userId', '==', user.uid), where('bankrollId', '==', id));
+      const snap = await getDocs(q);
+      
+      let batch = writeBatch(db);
+      let count = 0;
+
+      for (const betDoc of snap.docs) {
+        batch.delete(betDoc.ref);
+        count++;
+        if (count === 499) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
       }
+      
+      if (count > 0) await batch.commit();
+
+      // Same for transactions
+      const tQ = query(collection(db, 'transactions'), where('userId', '==', user.uid), where('bankrollId', '==', id));
+      const tSnap = await getDocs(tQ);
+      batch = writeBatch(db);
+      count = 0;
+      for (const tDoc of tSnap.docs) {
+        batch.delete(tDoc.ref);
+        count++;
+        if (count === 499) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+
       await deleteDoc(doc(db, 'bankrolls', id));
       const other = bankrolls.find(b => b.id !== id);
       if (other) {
         setActiveBankrollId(other.id);
         localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', other.id);
       }
-      showToast("Banca excluída com sucesso!", "info");
+      showToast("Banca e dados excluídos com sucesso!", "info");
     } catch (error) {
       console.error("Erro ao excluir banca:", error);
     }
   };
 
+  const fixOrphanedBets = async () => {
+    if (!user || !activeBankrollId) return;
+    if (!window.confirm("Isso irá mover todas as apostas que não pertencem a nenhuma das suas bancas atuais para a banca '"+bankroll.name+"'. Deseja continuar?")) return;
+    
+    try {
+      const q = query(collection(db, 'bets'), where('userId', '==', user.uid));
+      const snap = await getDocs(q);
+      const validBankrollIds = new Set(bankrolls.map(b => b.id));
+      
+      let batch = writeBatch(db);
+      let count = 0;
+      
+      for (const betDoc of snap.docs) {
+        const bId = betDoc.data().bankrollId;
+        if (!validBankrollIds.has(bId)) {
+          batch.update(betDoc.ref, { bankrollId: activeBankrollId });
+          count++;
+          if (count === 499) {
+            await batch.commit();
+            batch = writeBatch(db);
+            count = 0;
+          }
+        }
+      }
+      
+      if (count > 0) await batch.commit();
+      showToast(`${count} apostas órfãs foram restauradas!`, "success");
+    } catch (err) {
+      console.error("Rescue error:", err);
+      showToast("Erro ao resgatar apostas.", "info");
+    }
+  };
+
+  const consolidateAllBets = async () => {
+    if (!user || !activeBankrollId) return;
+    if (!window.confirm("ATENÇÃO: Todas as apostas de TODAS as suas bancas serão movidas para a banca '"+bankroll.name+"'. Esta ação não pode ser desfeita. Continuar?")) return;
+
+    try {
+      const q = query(collection(db, 'bets'), where('userId', '==', user.uid));
+      const snap = await getDocs(q);
+      
+      let batch = writeBatch(db);
+      let count = 0;
+      
+      for (const betDoc of snap.docs) {
+        batch.update(betDoc.ref, { bankrollId: activeBankrollId });
+        count++;
+        if (count === 499) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      
+      if (count > 0) await batch.commit();
+      showToast(`${count} apostas consolidadas com sucesso!`, "success");
+    } catch (err) {
+      console.error("Consolidation error:", err);
+      showToast("Erro ao consolidar apostas.", "info");
+    }
+  };
+
+  const removeDuplicates = async () => {
+    if (!user) return;
+    
+    const activeBets = bets.filter(b => !b.deleted);
+    const groups: { [key: string]: string[] } = {};
+    
+    activeBets.forEach(b => {
+      // Normalizar data para comparação (YYYY-MM-DD HH:mm)
+      const dateStr = format(new Date(b.date), "yyyy-MM-dd HH:mm");
+      const key = `${dateStr}_${b.event.toLowerCase()}_${b.market.toLowerCase()}_${b.selection.toLowerCase()}_${b.odds}_${b.stake}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(b.id);
+    });
+    
+    const toDelete: string[] = [];
+    Object.values(groups).forEach(ids => {
+      if (ids.length > 1) {
+        toDelete.push(...ids.slice(1));
+      }
+    });
+
+    if (toDelete.length === 0) {
+      showToast("Nenhuma duplicata encontrada.", "info");
+      return;
+    }
+
+    if (!window.confirm(`Encontramos ${toDelete.length} apostas idênticas (duplicadas). Deseja excluí-las permanentemente para limpar sua base de dados?`)) return;
+
+    try {
+      showToast("Limpando duplicatas...", "info");
+      let batch = writeBatch(db);
+      let count = 0;
+      for (const id of toDelete) {
+        batch.delete(doc(db, 'bets', id));
+        count++;
+        if (count === 499) {
+          await batch.commit();
+          batch = writeBatch(db);
+          count = 0;
+        }
+      }
+      if (count > 0) await batch.commit();
+      showToast(`${toDelete.length} duplicatas removidas com sucesso!`, "success");
+    } catch (err) {
+      console.error("Deduplication error:", err);
+      showToast("Erro ao remover duplicatas.", "info");
+    }
+  };
+
+  const auditReport = useMemo(() => {
+    const activeBets = bets.filter(b => !b.deleted);
+    const activeTrans = transactions.filter(t => !t.deleted);
+    
+    const orphans = activeBets.filter(b => !bankrolls.some(bk => bk.id === b.bankrollId));
+    const orphanTrans = activeTrans.filter(t => !bankrolls.some(bk => bk.id === t.bankrollId));
+    
+    const seen = new Set();
+    let duplicates = 0;
+    activeBets.forEach(b => {
+      const dateStr = format(safeNewDate(b.date), "yyyy-MM-dd HH:mm");
+      const key = `${dateStr}_${b.event.toLowerCase()}_${b.market.toLowerCase()}_${b.selection.toLowerCase()}_${b.odds}_${b.stake}`;
+      if (seen.has(key)) duplicates++;
+      else seen.add(key);
+    });
+
+    return {
+      total: activeBets.length,
+      orphans: orphans.length + orphanTrans.length,
+      duplicates
+    };
+  }, [bets, bankrolls, transactions]);
   const addTransaction = async (data: Omit<Transaction, 'id' | 'userId' | 'bankrollId' | 'createdAt' | 'updatedAt'>) => {
     if (!user || !activeBankrollId) return;
     try {
@@ -1381,7 +1816,7 @@ export default function App() {
                 e.preventDefault();
                 setAuthError('');
                 try {
-                  if (isRegistering) {
+                  if (isAuthRegistering) {
                     await registerWithEmail(email, password);
                   } else {
                     await loginWithEmail(email, password);
@@ -1422,7 +1857,7 @@ export default function App() {
                 type="submit"
                 className="w-full bg-accent text-bg py-4 px-6 rounded-xl font-black uppercase text-xs tracking-widest hover:opacity-90 active:scale-95 transition-all"
               >
-                {isRegistering ? 'Criar Conta' : 'Entrar na Plataforma'}
+                {isAuthRegistering ? 'Criar Conta' : 'Entrar na Plataforma'}
               </button>
               
               <p className="text-[9px] text-text-dim font-bold uppercase tracking-widest text-center opacity-40 px-4">
@@ -1491,12 +1926,12 @@ export default function App() {
           <div className="p-6 bg-surface/50 border-t border-border text-center">
             <button 
               onClick={() => {
-                setIsRegistering(!isRegistering);
+                setIsAuthRegistering(!isAuthRegistering);
                 setAuthError('');
               }}
               className="text-[10px] font-black uppercase tracking-widest text-text-dim hover:text-accent transition-colors"
             >
-              {isRegistering ? 'Já tenho uma conta? Entrar' : 'Não tem uma conta? Cadastre-se'}
+              {isAuthRegistering ? 'Já tenho uma conta? Entrar' : 'Não tem uma conta? Cadastre-se'}
             </button>
           </div>
         </div>
@@ -1641,7 +2076,7 @@ export default function App() {
 
             {/* Bookmaker breakdown in Balance Card */}
             <div className="space-y-1 relative z-10 border-t border-border/10 pt-4">
-               {bookmakerBalances.filter(([bm]) => bm !== 'Principal').map(([bm, amount]) => {
+               {bookmakerBalances.map(([bm, amount]) => {
                   const style = getBookmakerStyle(bm);
                   return (
                     <div key={bm} className="flex items-center justify-between group/bm">
@@ -1773,9 +2208,10 @@ export default function App() {
               </div>
 
               {/* Quick Summary Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 md:gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-4">
                 <StatsCard title="Total Entradas" value={`${stats.totalBets}`} icon={<History />} />
                 <StatsCard title="Lucro Total" value={formatCurrency(stats.totalProfit)} trend={stats.totalProfit >= 0 ? 'up' : 'down'} icon={<BarChart3 />} />
+                <StatsCard title="Lucro s/ Banca" value={`${stats.profitPercentage.toFixed(1)}%`} trend={stats.profitPercentage >= 0 ? 'up' : 'down'} icon={<TrendingUp />} />
                 <StatsCard title="Taxa de Acerto" value={`${stats.winRate.toFixed(1)}%`} icon={<History />} />
                 <StatsCard title="ROI" value={`${stats.roi.toFixed(1)}%`} icon={<TrendingUp />} />
                 <StatsCard title="Lucro em Unidades" value={`${stats.unitsWon.toFixed(1)}u`} icon={<Target />} />
@@ -1830,62 +2266,82 @@ export default function App() {
               </div>
 
               {/* Chart Section */}
-              <div className="glass-card p-6 min-h-[500px] border-border bg-surface">
-                <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+              <div className="glass-card p-6 min-h-[500px] border-border bg-[#0B0D11] shadow-2xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-accent/5 blur-[120px] rounded-full translate-x-1/2 -translate-y-1/2 pointer-events-none" />
+                
+                <div className="flex items-center justify-between mb-8 relative z-10">
                   <div>
-                    <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim mb-1">P/L ACUMULADO</h3>
-                    <p className={cn(
-                      "text-3xl font-black tracking-tighter",
-                      stats.totalProfit >= 0 ? "text-accent-green" : "text-loss"
-                    )}>
-                      {stats.totalProfit >= 0 ? '+' : ''}{formatCurrency(stats.totalProfit)}
-                    </p>
+                    <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim/60 mb-1">P/L ACUMULADO</h3>
+                    <div className="flex items-baseline gap-3">
+                      <p className={cn(
+                        "text-4xl font-black tracking-tighter",
+                        stats.totalProfit >= 0 ? "text-[#00FF95]" : "text-[#FF3E3E]"
+                      )}>
+                        {stats.totalProfit >= 0 ? '+' : ''}{formatCurrency(stats.totalProfit)}
+                      </p>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 px-4 py-2 bg-surface rounded-lg border border-border">
-                    <TrendingUp className="w-4 h-4 text-accent-green" />
-                    <span className="text-[10px] font-black uppercase tracking-widest text-accent-green">{stats.totalBets} tips</span>
+                  <div className="flex items-center gap-2 px-4 py-2 bg-[#15181F] rounded-full border border-white/5 shadow-inner">
+                    <TrendingUp className="w-3.5 h-3.5 text-[#00FF95]" />
+                    <span className="text-[10px] font-black uppercase tracking-widest text-[#00FF95]">{stats.totalBets} tips</span>
                   </div>
                 </div>
 
-                <div className="h-[350px] w-full mt-6">
+                <div className="h-[380px] w-full mt-6 relative z-10">
                   {chartData.length > 0 ? (
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={chartData}>
+                      <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <defs>
                           <linearGradient id="profitGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#00FF95" stopOpacity={0.15}/>
-                            <stop offset="95%" stopColor="#00FF95" stopOpacity={0}/>
+                            <stop offset="0%" stopColor="#00FF95" stopOpacity={0.2}/>
+                            <stop offset="100%" stopColor="#00FF95" stopOpacity={0}/>
                           </linearGradient>
                         </defs>
-                        <CartesianGrid strokeDasharray="0" vertical={false} stroke="#262B34" />
+                        <CartesianGrid vertical={false} stroke="#FFFFFF" opacity={0.03} />
+                        <ReferenceLine y={0} stroke="#FFFFFF" strokeOpacity={0.1} strokeDasharray="3 3" />
                         <XAxis 
                           dataKey="date" 
                           axisLine={false} 
                           tickLine={false} 
-                          tick={{ fontSize: 10, fill: '#7C828D', fontWeight: 900 }} 
-                          dy={10}
+                          tick={{ fontSize: 9, fill: '#7C828D', fontWeight: 600 }} 
+                          dy={15}
                         />
                         <YAxis 
                           axisLine={false} 
                           tickLine={false} 
-                          tick={{ fontSize: 10, fill: '#7C828D', fontWeight: 900 }} 
+                          tick={{ fontSize: 9, fill: '#7C828D', fontWeight: 600 }} 
                           tickFormatter={(val) => `R$ ${val}`} 
                           dx={-10}
                         />
                         <Tooltip 
-                          contentStyle={{ backgroundColor: '#15181F', border: '1px solid #262B34', borderRadius: '12px', color: '#fff', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}
-                          itemStyle={{ fontWeight: 900, fontSize: '14px', color: '#00FF95' }}
-                          labelStyle={{ opacity: 0.5, fontSize: '10px', textTransform: 'uppercase', marginBottom: '8px', letterSpacing: '0.1em' }}
-                          formatter={(value: any) => [`R$ ${value.toFixed(2)}`, 'Lucro']}
+                          content={({ active, payload, label }) => {
+                            if (active && payload && payload.length) {
+                              const val = payload[0].value as number;
+                              return (
+                                <div className="bg-[#15181F] border border-white/10 px-4 py-3 rounded-xl shadow-2xl backdrop-blur-md">
+                                  <p className="text-[9px] font-black text-text-dim uppercase tracking-widest mb-1.5 opacity-50">{label}</p>
+                                  <p className={cn(
+                                    "text-lg font-black tracking-tighter",
+                                    val >= 0 ? "text-[#00FF95]" : "text-[#FF3E3E]"
+                                  )}>
+                                    {val >= 0 ? '+' : ''}{formatCurrency(val)}
+                                  </p>
+                                </div>
+                              );
+                            }
+                            return null;
+                          }}
                         />
                         <Area 
                           type="monotone" 
                           dataKey="profit" 
                           stroke="#00FF95" 
-                          strokeWidth={2} 
+                          strokeWidth={4} 
                           fillOpacity={1} 
                           fill="url(#profitGradient)" 
-                          animationDuration={1500}
+                          animationDuration={2000}
+                          baseLine={0}
+                          activeDot={{ r: 6, fill: '#00FF95', stroke: '#0B0D11', strokeWidth: 2 }}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -2019,7 +2475,7 @@ export default function App() {
                               <Target className="w-4 h-4 text-accent" />
                               <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Contexto do Evento</span>
                            </div>
-                           <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                               <InputGroup 
                                  label="Data e Hora" 
                                  type="datetime-local" 
@@ -2043,13 +2499,6 @@ export default function App() {
                                  value={betForm.league} 
                                  onChange={(e) => setBetForm({...betForm, league: e.target.value})} 
                               />
-                              <InputGroup 
-                                 label="ID / Ref. Aposta" 
-                                 type="text" 
-                                 placeholder="Ex: #20349-X"
-                                 value={betForm.betId} 
-                                 onChange={(e) => setBetForm({...betForm, betId: e.target.value})} 
-                              />
                            </div>
                            <InputGroup 
                               label="Nome do Evento (Times / Atletas)" 
@@ -2063,31 +2512,26 @@ export default function App() {
 
                         {/* Selection & Odds Section */}
                         <div className="grid grid-cols-1 md:grid-cols-12 gap-8 pt-6 border-t border-border/50">
-                           <div className="md:col-span-8 space-y-6">
-                              <div className="flex items-center gap-2 mb-2">
-                                 <Zap className="w-4 h-4 text-accent" />
-                                 <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Seleção e Estratégia</span>
+                           <div className="md:col-span-12 space-y-6">
+                              <div className="flex items-center justify-between mb-2">
+                                 <div className="flex items-center gap-2">
+                                    <Zap className="w-4 h-4 text-accent" />
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Seleção e Estratégia</span>
+                                 </div>
+                                 <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-accent/10 border border-accent/20">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+                                    <span className="text-[9px] font-black text-accent uppercase tracking-tighter">Banca: {bankroll.name}</span>
+                                 </div>
                               </div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                 <InputGroup 
-                                    label="Mercado" 
-                                    type="text" 
-                                    list="markets"
-                                    placeholder="Ex: Ambas Marcam"
-                                    value={betForm.market} 
-                                    onChange={(e) => setBetForm({...betForm, market: e.target.value})} 
-                                    required 
-                                 />
-                                 <InputGroup 
-                                    label="Minha Seleção" 
-                                    type="text" 
-                                    list="selections"
-                                    placeholder="Ex: Sim"
-                                    value={betForm.selection} 
-                                    onChange={(e) => setBetForm({...betForm, selection: e.target.value})} 
-                                    required 
-                                 />
-                              </div>
+                              <InputGroup 
+                                 label="Mercado / Detalhes da Aposta" 
+                                 type="text" 
+                                 list="markets"
+                                 placeholder="Ex: Real Madrid - Vencer • Ambas Marcam: Sim"
+                                 value={betForm.market} 
+                                 onChange={(e) => setBetForm({...betForm, market: e.target.value, selection: e.target.value})} 
+                                 required 
+                              />
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                  <InputGroup 
                                     label="Odds (Cotação)" 
@@ -2230,8 +2674,13 @@ export default function App() {
                               </button>
                               <button 
                                  type="submit"
-                                 className="flex-[2] md:px-12 py-4 bg-accent text-bg text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-xl shadow-accent/20 active:scale-95"
+                                 disabled={isRegistering}
+                                 className={cn(
+                                   "flex-[2] md:px-12 py-4 bg-accent text-bg text-[10px] font-black uppercase tracking-widest rounded-xl hover:opacity-90 transition-all shadow-xl shadow-accent/20 active:scale-95 flex items-center justify-center gap-2",
+                                   isRegistering && "opacity-50 cursor-not-allowed"
+                                 )}
                               >
+                                 {isRegistering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                                  {editingBetId ? 'Salvar Alterações' : 'Confirmar e Registrar'}
                               </button>
                            </div>
@@ -2422,28 +2871,50 @@ export default function App() {
 
                            {/* Final Actions */}
                            <div className="flex items-center gap-2 ml-auto">
-                              <button 
-                                onClick={() => {
-                                  const selectedBets = bets.filter(b => selectedBetIds.has(b.id));
-                                  syncResults(selectedBets);
-                                }}
-                                disabled={isSyncingResults}
-                                className={cn(
-                                    "flex items-center gap-2 px-4 sm:px-6 py-3 bg-accent text-bg rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-accent/20 disabled:opacity-50",
-                                    isSyncingResults && "animate-pulse"
-                                )}
-                              >
-                                <Sparkles className="w-4 h-4" />
-                                <span className="hidden sm:inline">SINCRONIZAR</span>
-                              </button>
+                              {activeTab === 'trash' ? (
+                                <>
+                                  <button 
+                                    onClick={() => restoreSelectedBets()}
+                                    className="flex items-center gap-2 px-6 py-3 bg-accent text-bg rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-accent/20"
+                                  >
+                                    <RotateCcw className="w-4 h-4" />
+                                    <span className="hidden sm:inline">Restaurar Seleção</span>
+                                  </button>
 
-                              <button 
-                                onClick={deleteSelectedBets}
-                                className="w-12 h-12 flex items-center justify-center bg-loss/10 text-loss hover:bg-loss hover:text-white rounded-xl transition-all active:scale-90"
-                                title="Excluir selecionados"
-                              >
-                                <Trash2 className="w-5 h-5" />
-                              </button>
+                                  <button 
+                                    onClick={() => permanentlyDeleteSelectedBets()}
+                                    className="w-12 h-12 flex items-center justify-center bg-loss/10 text-loss hover:bg-loss hover:text-white rounded-xl transition-all active:scale-90"
+                                    title="Excluir Permanentemente"
+                                  >
+                                    <Trash2 className="w-5 h-5" />
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button 
+                                    onClick={() => {
+                                      const selectedBets = bets.filter(b => selectedBetIds.has(b.id));
+                                      syncResults(selectedBets);
+                                    }}
+                                    disabled={isSyncingResults}
+                                    className={cn(
+                                        "flex items-center gap-2 px-4 sm:px-6 py-3 bg-accent text-bg rounded-xl text-[10px] font-black uppercase tracking-widest transition-all hover:scale-[1.02] active:scale-[0.98] shadow-lg shadow-accent/20 disabled:opacity-50",
+                                        isSyncingResults && "animate-pulse"
+                                    )}
+                                  >
+                                    <Sparkles className="w-4 h-4" />
+                                    <span className="hidden sm:inline">SINCRONIZAR</span>
+                                  </button>
+
+                                  <button 
+                                    onClick={() => deleteSelectedBets()}
+                                    className="w-12 h-12 flex items-center justify-center bg-loss/10 text-loss hover:bg-loss hover:text-white rounded-xl transition-all active:scale-90"
+                                    title="Mover para lixeira"
+                                  >
+                                    <Trash2 className="w-5 h-5" />
+                                  </button>
+                                </>
+                              )}
                            </div>
                         </motion.div>
                       </div>
@@ -2489,6 +2960,38 @@ export default function App() {
                       <option>Pendente</option>
                       <option>Reembolsada</option>
                     </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-text-dim">Casa:</span>
+                    <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[200px] sm:max-w-md bg-surface/50 p-1 rounded-lg border border-border/40">
+                       <button
+                         onClick={() => setHistoryBookmakerFilter([])}
+                         className={cn(
+                           "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all whitespace-nowrap",
+                           historyBookmakerFilter.length === 0 ? "bg-accent text-bg" : "text-text-dim hover:text-text-main"
+                         )}
+                       >
+                         Todas
+                       </button>
+                       {Array.from(new Set(bets.map(b => b.bookmaker || 'Outra'))).map(bm => (
+                         <button
+                           key={bm}
+                           onClick={() => {
+                             setHistoryBookmakerFilter(prev => 
+                               prev.includes(bm) ? prev.filter(x => x !== bm) : [...prev, bm]
+                             );
+                           }}
+                           className={cn(
+                             "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all whitespace-nowrap",
+                             historyBookmakerFilter.includes(bm) 
+                               ? "bg-accent/20 text-accent border border-accent/20" 
+                               : "text-text-dim hover:text-text-main"
+                           )}
+                         >
+                           {bm}
+                         </button>
+                       ))}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2628,10 +3131,10 @@ export default function App() {
                                         exit={{ opacity: 0, scale: 0.95 }}
                                          className={cn(
                                            "bg-bg/90 backdrop-blur-xl border-2 transition-all duration-500 rounded-3xl overflow-hidden group relative mb-4 hover:scale-[1.005] hover:shadow-2xl hover:shadow-indigo-500/5",
-                                           bet.status === 'won' || bet.status === 'half_win' ? "border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
-                                           bet.status === 'lost' || bet.status === 'half_loss' ? "border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
-                                           bet.status === 'void' ? "border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : "border-border/60 bg-surface/40",
-                                           bet.status !== 'pending' && "border-2",
+                                           bet.status === 'won' || bet.status === 'half_win' ? "border border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
+                                           bet.status === 'lost' || bet.status === 'half_loss' ? "border border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
+                                           bet.status === 'void' ? "border border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : "border border-border/60 bg-surface/40",
+                                           bet.status !== 'pending' && "border",
                                            selectedBetIds.has(bet.id) ? "ring-2 ring-accent border-accent" : ""
                                         )}
                                       >
@@ -2661,7 +3164,7 @@ export default function App() {
                                             )} />
                                             <div>
                                               <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
-                                                {bet.selection}
+                                                {bet.market}
                                                 <StatusBadge 
                                                   status={bet.status} 
                                                   isSyncing={bet.id === syncingBetId} 
@@ -2672,18 +3175,17 @@ export default function App() {
                                                 {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
                                                 • {bet.event} 
                                                 {bet.league && <span className="opacity-60">• {bet.league}</span>}
-                                                • {bet.market} 
                                                 {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
-                                                {bet.bookmaker && (
+                                                {(bet.bookmaker || 'Geral') && (
                                                   <span className={cn(
                                                     "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border transition-all hover:scale-105 shadow-xl",
-                                                    getBookmakerStyle(bet.bookmaker).bg,
-                                                    getBookmakerStyle(bet.bookmaker).border,
-                                                    getBookmakerStyle(bet.bookmaker).color,
-                                                    getBookmakerStyle(bet.bookmaker).glow
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').bg,
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').border,
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').color,
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').glow
                                                   )}>
                                                     <div className={cn("w-2 h-2 rounded-full animate-pulse shadow-[0_0_8px_currentColor] bg-current")} />
-                                                    {bet.bookmaker}
+                                                    {bet.bookmaker || 'Geral'}
                                                   </span>
                                                 )}
                                               </div>
@@ -2858,16 +3360,16 @@ export default function App() {
                                           <span className="inline-flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-text-main bg-bg px-2 py-1 rounded-lg border border-border/40 shadow-sm leading-none min-w-[50px]">
                                             {format(safeNewDate(bet.date), "HH:mm")}
                                           </span>
-                                          {bet.bookmaker && (
+                                          {(bet.bookmaker || 'Geral') && (
                                             <span className={cn(
                                               "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-widest leading-none border shadow-lg",
-                                              getBookmakerStyle(bet.bookmaker).bg,
-                                              getBookmakerStyle(bet.bookmaker).border,
-                                              getBookmakerStyle(bet.bookmaker).color,
-                                              getBookmakerStyle(bet.bookmaker).glow
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').bg,
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').border,
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').color,
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').glow
                                             )}>
                                               <div className={cn("w-1.5 h-1.5 rounded-full bg-current")} />
-                                              {bet.bookmaker}
+                                              {bet.bookmaker || 'Geral'}
                                             </span>
                                           )}
                                         </div>
@@ -2878,13 +3380,13 @@ export default function App() {
                                    <div className="space-y-1">
                                      <div className="flex items-center gap-2 flex-wrap">
                                         <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
-                                          {bet.sport} • {bet.market}
+                                          {bet.sport} • {format(safeNewDate(bet.date), "HH:mm")}
                                         </p>
                                         {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
                                      </div>
-                                     <h4 className="text-base font-black uppercase text-text-main leading-none py-1 border-b border-border/10 pb-1.5">{bet.selection}</h4>
+                                     <h4 className="text-base font-black uppercase text-text-main leading-tight py-1">{bet.market}</h4>
                                      <div className="space-y-1 pt-2">
-                                        <p className="text-[11px] font-bold text-text-dim uppercase opacity-80 leading-tight">{bet.event}</p>
+                                        <p className="text-[11px] font-bold text-text-dim uppercase opacity-60 leading-tight">{bet.event}</p>
                                         {(bet.league || bet.betId) && (
                                           <div className="flex items-center gap-3">
                                             {bet.league && <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest">Liga: {bet.league}</span>}
@@ -3363,7 +3865,7 @@ export default function App() {
             <div className="space-y-6">
                <div className="space-y-8">
                 {groupedHistory.map(([date, group]: [string, any]) => (
-                  <div key={date} className="space-y-3">
+                  <div key={date} className="space-y-6">
                     <div className="flex items-center gap-4 px-2">
                       <div className="h-[1px] flex-1 bg-border" />
                       <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">
@@ -3374,76 +3876,99 @@ export default function App() {
                       <div className="h-[1px] flex-1 bg-border" />
                     </div>
 
-                    <div className="glass-card overflow-hidden border border-border">
-                        <div className="overflow-x-auto">
-                        <table className="w-full text-left">
-                          <thead>
-                            <tr className="bg-surface border-b border-border">
-                              <th className="px-6 py-4 text-[10px] font-black text-text-dim uppercase tracking-widest">Aposta na Lixeira</th>
-                              <th className="px-6 py-4 text-[10px] font-black text-text-dim uppercase tracking-widest text-right">Ações</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-border/50">
-                            {group.bets.map((bet: Bet) => (
-                              <tr key={bet.id} className="hover:bg-zinc-800/10 transition-colors">
-                                <td className="px-6 py-4">
-                                  <div className="font-bold text-text-main text-sm uppercase">{bet.selection}</div>
-                                  <div className="text-[10px] text-text-dim font-bold uppercase mt-0.5">{bet.event}</div>
-                                </td>
-                                <td className="px-6 py-4 text-right">
-                                  <div className="flex items-center justify-end gap-1">
-                                    <button 
-                                      onClick={() => restoreBet(bet.id)}
-                                      className="p-2 hover:bg-accent/10 text-accent rounded-lg transition-colors"
-                                      title="Restaurar"
-                                    >
-                                      <RotateCcw className="w-4 h-4" />
-                                    </button>
-                                    <button 
-                                      onClick={() => setBetToDelete(bet.id)}
-                                      className="p-2 hover:bg-loss/10 text-loss rounded-lg transition-colors"
-                                      title="Excluir Permanentemente"
-                                    >
-                                      <Trash2 className="w-4 h-4" />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                            {group.transactions.map((t: Transaction) => (
-                               <tr key={t.id} className="hover:bg-zinc-800/10 transition-colors">
-                                 <td className="px-6 py-4">
-                                   <div className="font-bold text-text-main text-sm uppercase flex items-center gap-2">
-                                     {t.type === 'withdrawal' ? 'Saque' : t.type === 'deposit' ? 'Aporte' : t.type === 'transfer' ? 'Transferência' : 'Ajuste'}
-                                     <span className="text-[10px] opacity-60 tabular-nums">({formatCurrency(t.amount)})</span>
-                                   </div>
-                                   <div className="text-[10px] text-text-dim font-bold uppercase mt-0.5">
-                                      {t.fromBookmaker || t.toBookmaker || 'Conta'}
-                                   </div>
-                                 </td>
-                                 <td className="px-6 py-4 text-right">
-                                   <div className="flex items-center justify-end gap-1">
-                                     <button 
-                                       onClick={() => restoreTransaction(t.id)}
-                                       className="p-2 hover:bg-accent/10 text-accent rounded-lg transition-colors"
-                                       title="Restaurar"
-                                     >
-                                       <RotateCcw className="w-4 h-4" />
-                                     </button>
-                                     <button 
-                                       onClick={() => permanentlyDeleteTransaction(t.id)}
-                                       className="p-2 hover:bg-loss/10 text-loss rounded-lg transition-colors"
-                                       title="Excluir Permanentemente"
-                                     >
-                                       <Trash2 className="w-4 h-4" />
-                                     </button>
-                                   </div>
-                                 </td>
-                               </tr>
-                             ))}
-                          </tbody>
-                        </table>
-                      </div>
+                    <div className="space-y-6">
+                      {/* Section: Bets */}
+                      {group.bets.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2 px-4">
+                            <History className="w-3 h-3 text-accent" />
+                            <h4 className="text-[9px] font-black uppercase tracking-widest text-text-dim">Apostas Excluídas</h4>
+                          </div>
+                          <div className="glass-card overflow-hidden border border-border">
+                              <div className="overflow-x-auto">
+                              <table className="w-full text-left">
+                                <tbody className="divide-y divide-border/50">
+                                  {group.bets.map((bet: Bet) => (
+                                    <tr key={bet.id} className="hover:bg-zinc-800/10 transition-colors">
+                                      <td className="px-6 py-4">
+                                        <div className="font-bold text-text-main text-sm uppercase">{bet.selection}</div>
+                                        <div className="text-[10px] text-text-dim font-bold uppercase mt-0.5">{bet.event}</div>
+                                      </td>
+                                      <td className="px-6 py-4 text-right">
+                                        <div className="flex items-center justify-end gap-1">
+                                          <button 
+                                            onClick={() => restoreBet(bet.id)}
+                                            className="p-2 hover:bg-accent/10 text-accent rounded-lg transition-colors"
+                                            title="Restaurar"
+                                          >
+                                            <RotateCcw className="w-4 h-4" />
+                                          </button>
+                                          <button 
+                                            onClick={() => setBetToDelete(bet.id)}
+                                            className="p-2 hover:bg-loss/10 text-loss rounded-lg transition-colors"
+                                            title="Excluir Permanentemente"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section: Transactions */}
+                      {group.transactions.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2 px-4">
+                            <ArrowRightLeft className="w-3 h-3 text-accent" />
+                            <h4 className="text-[9px] font-black uppercase tracking-widest text-text-dim">Transações Excluídas</h4>
+                          </div>
+                          <div className="glass-card overflow-hidden border border-border">
+                              <div className="overflow-x-auto">
+                              <table className="w-full text-left">
+                                <tbody className="divide-y divide-border/50">
+                                  {group.transactions.map((t: Transaction) => (
+                                    <tr key={t.id} className="hover:bg-zinc-800/10 transition-colors">
+                                      <td className="px-6 py-4">
+                                        <div className="font-bold text-text-main text-sm uppercase flex items-center gap-2">
+                                          {t.type === 'withdrawal' ? 'Saque' : t.type === 'deposit' ? 'Aporte' : t.type === 'transfer' ? 'Transferência' : 'Ajuste'}
+                                          <span className="text-[10px] opacity-60 tabular-nums">({formatCurrency(t.amount)})</span>
+                                        </div>
+                                        <div className="text-[10px] text-text-dim font-bold uppercase mt-0.5">
+                                           {t.fromBookmaker || t.toBookmaker || 'Conta'}
+                                        </div>
+                                      </td>
+                                      <td className="px-6 py-4 text-right">
+                                        <div className="flex items-center justify-end gap-1">
+                                          <button 
+                                            onClick={() => restoreTransaction(t.id)}
+                                            className="p-2 hover:bg-accent/10 text-accent rounded-lg transition-colors"
+                                            title="Restaurar"
+                                          >
+                                            <RotateCcw className="w-4 h-4" />
+                                          </button>
+                                          <button 
+                                            onClick={() => permanentlyDeleteTransaction(t.id)}
+                                            className="p-2 hover:bg-loss/10 text-loss rounded-lg transition-colors"
+                                            title="Excluir Permanentemente"
+                                          >
+                                            <Trash2 className="w-4 h-4" />
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -3461,7 +3986,25 @@ export default function App() {
           )}
 
           {activeTab === 'settings' && (
-            <div className="max-w-xl space-y-8">
+            <div className="max-w-xl space-y-8 pb-20">
+                {/* Mobile Quick Links */}
+                <div className="lg:hidden grid grid-cols-2 gap-4">
+                   <button 
+                     onClick={() => setActiveTab('insights')}
+                     className="flex flex-col items-center justify-center gap-2 p-6 bg-accent/10 border border-accent/20 rounded-2xl transition-all active:scale-95"
+                   >
+                     <Sparkles className="w-8 h-8 text-accent" />
+                     <span className="text-[10px] font-black uppercase tracking-widest text-accent">Insights IA</span>
+                   </button>
+                   <button 
+                     onClick={() => setActiveTab('trash')}
+                     className="flex flex-col items-center justify-center gap-2 p-6 bg-loss/10 border border-loss/20 rounded-2xl transition-all active:scale-95"
+                   >
+                     <Trash2 className="w-8 h-8 text-loss" />
+                     <span className="text-[10px] font-black uppercase tracking-widest text-loss">Lixeira</span>
+                   </button>
+                </div>
+
                 <div className="glass-card p-6 border-accent/20 bg-accent/5">
                     <div className="flex items-center justify-between mb-6">
                         <h3 className="text-lg font-black uppercase tracking-tighter">Gerenciar Bancas</h3>
@@ -3475,53 +4018,27 @@ export default function App() {
                     </div>
 
                     <div className="space-y-3">
-                        {bankrolls.map(b => (
-                            <motion.div 
+                        <DndContext 
+                          sensors={sensors}
+                          collisionDetection={closestCenter}
+                          onDragEnd={handleDragEndBankrolls}
+                        >
+                          <SortableContext 
+                            items={bankrolls.map(b => b.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {bankrolls.map(b => (
+                              <SortableBankrollItem 
                                 key={b.id} 
-                                whileTap={{ scale: 0.98 }}
-                                className={cn(
-                                    "p-4 rounded-xl border flex items-center justify-between transition-all group relative overflow-hidden",
-                                    b.id === activeBankrollId ? "bg-accent/10 border-accent" : "bg-bg border-border hover:border-text-dim/30"
-                                )}
-                            >
-                                {b.id === activeBankrollId && (
-                                   <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 blur-2xl rounded-full translate-x-8 -translate-y-8" />
-                                )}
-                                <div onClick={() => {
-                                    setActiveBankrollId(b.id);
-                                    localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', b.id);
-                                    showToast(`Banca "${b.name}" ativada!`);
-                                }} className="flex-1 cursor-pointer relative z-10">
-                                    <div className="flex items-center gap-2">
-                                        <p className="font-black text-sm uppercase">{b.name}</p>
-                                        {b.id === activeBankrollId && (
-                                           <span className="text-[7px] bg-accent text-bg px-1.5 py-0.5 rounded-full font-black animate-pulse flex items-center gap-1">
-                                              <Check className="w-2 h-2" />
-                                              ATIVA
-                                           </span>
-                                        )}
-                                    </div>
-                                    <p className="text-[10px] font-bold text-text-dim uppercase tracking-widest mt-1 opacity-60">
-                                        Inicial: {formatCurrency(b.total)} • Unit: {formatCurrency(b.unitSize)}
-                                    </p>
-                                </div>
-                                <div className="flex items-center gap-1 relative z-10">
-                                    {bankrolls.length > 1 && (
-                                        <button 
-                                            onClick={() => deleteBankroll(b.id)}
-                                            className="p-2 text-text-dim hover:text-loss transition-colors hover:bg-loss/10 rounded-lg"
-                                            title="Excluir Banca"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                    <ChevronRight className={cn(
-                                       "w-4 h-4 transition-all duration-300",
-                                       b.id === activeBankrollId ? "text-accent opacity-100" : "text-text-dim opacity-0"
-                                    )} />
-                                </div>
-                            </motion.div>
-                        ))}
+                                b={b} 
+                                activeBankrollId={activeBankrollId}
+                                setActiveBankrollId={setActiveBankrollId}
+                                deleteBankroll={deleteBankroll}
+                                showToast={showToast}
+                              />
+                            ))}
+                          </SortableContext>
+                        </DndContext>
                     </div>
                 </div>
 
@@ -3587,6 +4104,71 @@ export default function App() {
                                 <p className="text-[10px] uppercase font-black text-text-dim mb-1 tracking-widest">% por Unidade</p>
                                 <p className="text-2xl font-black text-accent">{((bankroll.unitSize / bankroll.total) * 100).toFixed(1)}%</p>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="glass-card p-6 border-accent/20 bg-accent/5">
+                    <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-accent/20 rounded-lg">
+                                <BarChart3 className="w-5 h-5 text-accent" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-black uppercase tracking-tighter">Relatório de Integridade</h3>
+                                <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Estado atual da sua base de dados</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        <div className="p-4 bg-bg/40 rounded-xl border border-border">
+                            <span className="text-[9px] font-black text-text-dim uppercase tracking-widest block mb-1">Apostas Totais</span>
+                            <span className="text-xl font-black text-text-main">{auditReport.total}</span>
+                        </div>
+                        <div className={cn("p-4 rounded-xl border", auditReport.duplicates > 0 ? "bg-loss/10 border-loss/20" : "bg-bg/40 border-border")}>
+                            <span className="text-[9px] font-black text-text-dim uppercase tracking-widest block mb-1">Duplicadas</span>
+                            <span className={cn("text-xl font-black", auditReport.duplicates > 0 ? "text-loss" : "text-text-main")}>{auditReport.duplicates}</span>
+                        </div>
+                        <div className={cn("p-4 rounded-xl border", auditReport.orphans > 0 ? "bg-yellow-500/10 border-yellow-500/20" : "bg-bg/40 border-border")}>
+                            <span className="text-[9px] font-black text-text-dim uppercase tracking-widest block mb-1">Sem Banca</span>
+                            <span className={cn("text-xl font-black", auditReport.orphans > 0 ? "text-yellow-500" : "text-text-main")}>{auditReport.orphans}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="glass-card p-6 border-red-500/20">
+                    <div className="flex items-center gap-3 mb-6">
+                        <div className="p-2 bg-red-500/10 rounded-lg">
+                            <RotateCcw className="w-5 h-5 text-red-500" />
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-black uppercase tracking-tighter">Centro de Resgate</h3>
+                            <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Corrija problemas com apostas 'perdidas' ou órfãs</p>
+                        </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="p-4 bg-bg/50 border border-border rounded-xl">
+                            <h4 className="text-xs font-black uppercase tracking-widest mb-2">Resgatar Apostas Órfãs</h4>
+                            <p className="text-[9px] text-text-dim mb-4 leading-relaxed font-bold uppercase tracking-wider">Busca apostas que pertenciam a bancas excluídas e as move para a banca atual ('{bankroll.name}').</p>
+                            <button 
+                                onClick={fixOrphanedBets}
+                                className="w-full py-3 bg-surface border border-border hover:border-accent hover:text-accent transition-all rounded-lg text-[10px] font-black uppercase tracking-widest"
+                            >
+                                Procurar Órfãs ({auditReport.orphans})
+                            </button>
+                        </div>
+                        
+                        <div className="p-4 bg-bg/50 border border-border rounded-xl">
+                            <h4 className="text-xs font-black uppercase tracking-widest mb-2">Remover Duplicatas</h4>
+                            <p className="text-[9px] text-text-dim mb-4 leading-relaxed font-bold uppercase tracking-wider">Identifica entradas idênticas (mesmo evento, odd e hora) e remove as cópias indesejadas.</p>
+                            <button 
+                                onClick={removeDuplicates}
+                                className="w-full py-3 bg-surface border border-border hover:border-accent hover:text-accent transition-all rounded-lg text-[10px] font-black uppercase tracking-widest"
+                            >
+                                Limpar Duplicatas ({auditReport.duplicates})
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -3760,7 +4342,8 @@ export default function App() {
                                                     if (user) {
                                                         try {
                                                             await setDoc(doc(db, 'users', user.uid), {
-                                                                geminiKey: key
+                                                                geminiKey: key,
+                                                                updatedAt: serverTimestamp()
                                                             }, { merge: true });
                                                             showToast('Configuração Salva na Nuvem!', 'success');
                                                         } catch (e) {
@@ -3788,7 +4371,8 @@ export default function App() {
                                                         if (user) {
                                                             try {
                                                                 await setDoc(doc(db, 'users', user.uid), {
-                                                                    geminiKey: deleteField()
+                                                                    geminiKey: deleteField(),
+                                                                    updatedAt: serverTimestamp()
                                                                 }, { merge: true });
                                                             } catch (e) {
                                                                 console.error("Erro ao deletar da nuvem:", e);
@@ -3851,68 +4435,108 @@ export default function App() {
       </main>
 
       {/* Mobile Bottom Navigation */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-bg border-t border-border flex items-center justify-around px-4 z-20">
+      <nav className="lg:hidden fixed bottom-1 left-4 right-4 h-16 bg-bg/90 backdrop-blur-2xl border border-white/5 rounded-2xl flex items-center justify-between px-2 z-[100] shadow-[0_10px_40px_rgba(0,0,0,0.8)]">
         <button 
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => { setActiveTab('dashboard'); setIsMobileMenuOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'dashboard' ? "text-accent" : "text-text-dim"
+            "flex flex-col items-center justify-center gap-1 flex-1 transition-all border-none bg-transparent outline-none py-1",
+            activeTab === 'dashboard' ? "text-accent scale-110" : "text-text-dim"
           )}
         >
           <LayoutDashboard className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Dash</span>
+          <span className="text-[7px] font-black uppercase tracking-tight">Dash</span>
         </button>
         <button 
-          onClick={() => setActiveTab('register')}
+          onClick={() => { setActiveTab('register'); setIsMobileMenuOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'register' ? "text-accent" : "text-text-dim"
+            "flex flex-col items-center justify-center gap-1 flex-1 transition-all border-none bg-transparent outline-none py-1",
+            activeTab === 'register' ? "text-accent scale-110" : "text-text-dim"
           )}
         >
           <Plus className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Novo</span>
+          <span className="text-[7px] font-black uppercase tracking-tight">Novo</span>
         </button>
         <button 
-          onClick={() => setActiveTab('insights')}
+          onClick={() => { setActiveTab('bets'); setIsMobileMenuOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'insights' ? "text-accent" : "text-text-dim"
-          )}
-        >
-          <Sparkles className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">IA</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab('bets')}
-          className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'bets' ? "text-accent" : "text-text-dim"
+            "flex flex-col items-center justify-center gap-1 flex-1 transition-all border-none bg-transparent outline-none py-1",
+            activeTab === 'bets' ? "text-accent scale-110" : "text-text-dim"
           )}
         >
           <History className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">History</span>
+          <span className="text-[7px] font-black uppercase tracking-tight">Hist</span>
         </button>
         <button 
-          onClick={() => setActiveTab('trash')}
+          onClick={() => { setActiveTab('transfers'); setIsMobileMenuOpen(false); }}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'trash' ? "text-accent" : "text-text-dim"
+            "flex flex-col items-center justify-center gap-1 flex-1 transition-all border-none bg-transparent outline-none py-1",
+            activeTab === 'transfers' ? "text-accent scale-110" : "text-text-dim"
           )}
         >
-          <Trash2 className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Trash</span>
+          <ArrowRightLeft className="w-5 h-5" />
+          <span className="text-[7px] font-black uppercase tracking-tight">Transfs</span>
         </button>
         <button 
-          onClick={() => setActiveTab('settings')}
+          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
           className={cn(
-            "flex flex-col items-center gap-1 transition-all",
-            activeTab === 'settings' ? "text-accent" : "text-text-dim"
+            "flex flex-col items-center justify-center gap-1 flex-1 transition-all border-none bg-transparent outline-none py-1",
+            isMobileMenuOpen ? "text-accent scale-110" : "text-text-dim"
           )}
         >
-          <Settings2 className="w-5 h-5" />
-          <span className="text-[8px] font-black uppercase tracking-widest">Prefs</span>
+          <Menu className="w-5 h-5" />
+          <span className="text-[7px] font-black uppercase tracking-tight">Mais</span>
         </button>
       </nav>
+
+      {/* Mobile Drawer (Gaveta) */}
+      <AnimatePresence>
+        {isMobileMenuOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] lg:hidden"
+            />
+            <motion.div 
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              className="fixed bottom-0 left-0 right-0 bg-bg border-t border-border rounded-t-[32px] p-8 z-[95] lg:hidden shadow-[0_-20px_40px_rgba(0,0,0,0.5)]"
+            >
+              <div className="w-12 h-1.5 bg-border rounded-full mx-auto mb-8" />
+              <div className="grid grid-cols-3 gap-6">
+                <button 
+                  onClick={() => { setActiveTab('insights'); setIsMobileMenuOpen(false); }}
+                  className="flex flex-col items-center gap-3 p-4 rounded-2xl bg-surface/50 border border-border"
+                >
+                  <Sparkles className="w-6 h-6 text-accent" />
+                  <span className="text-[9px] font-black uppercase tracking-widest text-text-main">IA Insights</span>
+                </button>
+                <button 
+                  onClick={() => { setActiveTab('trash'); setIsMobileMenuOpen(false); }}
+                  className="flex flex-col items-center gap-3 p-4 rounded-2xl bg-surface/50 border border-border"
+                >
+                  <Trash2 className="w-6 h-6 text-loss" />
+                  <span className="text-[9px] font-black uppercase tracking-widest text-text-main">Lixeira</span>
+                </button>
+                <button 
+                  onClick={() => { setActiveTab('settings'); setIsMobileMenuOpen(false); }}
+                  className="flex flex-col items-center gap-3 p-4 rounded-2xl bg-surface/50 border border-border"
+                >
+                  <Settings2 className="w-6 h-6 text-indigo-400" />
+                  <span className="text-[9px] font-black uppercase tracking-widest text-text-main">Ajustes</span>
+                </button>
+              </div>
+              <div className="mt-8 pt-8 border-t border-border/50 text-center">
+                 <p className="text-[8px] font-black uppercase tracking-[0.3em] text-text-dim opacity-30">StakeWise App v1.5.0</p>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* Modals & Overlays */}
       <AnimatePresence>
@@ -4195,25 +4819,14 @@ export default function App() {
                               </div>
 
                               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                                <div>
-                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Mercado</p>
+                                <div className="md:col-span-2">
+                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Mercado / Detalhes</p>
                                   <input 
                                     className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
                                     value={bet.market}
                                     onChange={(e) => {
                                       const newQueue = [...bulkQueue];
                                       newQueue[idx].market = e.target.value;
-                                      setBulkQueue(newQueue);
-                                    }}
-                                  />
-                                </div>
-                                <div>
-                                  <p className="text-[8px] font-black text-text-dim uppercase tracking-widest mb-1.5 px-1">Seleção</p>
-                                  <input 
-                                    className="w-full bg-bg border border-border rounded-xl px-3 py-2 text-[10px] font-black text-text-main focus:border-accent outline-none uppercase shadow-sm"
-                                    value={bet.selection}
-                                    onChange={(e) => {
-                                      const newQueue = [...bulkQueue];
                                       newQueue[idx].selection = e.target.value;
                                       setBulkQueue(newQueue);
                                     }}
@@ -4659,6 +5272,7 @@ export default function App() {
                          status: betForm.status,
                          cashoutValue: betForm.cashoutValue ? Number(betForm.cashoutValue) : null,
                          bookmaker: betForm.bookmaker,
+                         bankrollId: betForm.bankrollId
                       };
                       updateBet(editingBetId, betData);
                    }} className="space-y-6">
@@ -4758,21 +5372,13 @@ export default function App() {
                          />
                       </div>
 
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="grid grid-cols-1 gap-6">
                          <InputGroup 
-                            label="Mercado" 
+                            label="Mercado / Detalhes da Aposta" 
                             type="text" 
-                            placeholder="Ex: Resultado Final"
+                            placeholder="Ex: Resultado Final • Real Madrid"
                             value={betForm.market} 
                             onChange={(e) => setBetForm({...betForm, market: e.target.value})} 
-                            required 
-                         />
-                         <InputGroup 
-                            label="Seleção" 
-                            type="text" 
-                            placeholder="Ex: Real Madrid"
-                            value={betForm.selection} 
-                            onChange={(e) => setBetForm({...betForm, selection: e.target.value})} 
                             required 
                          />
                       </div>
@@ -5077,4 +5683,85 @@ function InputGroup({ label, ...props }: { label: string } & React.InputHTMLAttr
       />
     </div>
   )
+}
+
+function SortableBankrollItem({ b, activeBankrollId, setActiveBankrollId, deleteBankroll, showToast }: any) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: b.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : 1
+  };
+
+  return (
+    <motion.div 
+        ref={setNodeRef}
+        style={style}
+        whileHover={{ scale: 1.01 }}
+        whileTap={{ scale: 0.99 }}
+        className={cn(
+            "p-3 rounded-xl border flex items-center gap-3 transition-all group relative overflow-hidden",
+            b.id === activeBankrollId 
+              ? "bg-accent/[0.08] border-accent/50 shadow-lg shadow-accent/5" 
+              : "bg-surface border-border hover:border-accent/30 hover:bg-white/[0.02]",
+            isDragging && "opacity-100 z-50 bg-[#1A1D23] border-accent shadow-2xl scale-[1.03] shadow-accent/20 cursor-grabbing"
+        )}
+    >
+        <button 
+          {...attributes} 
+          {...listeners}
+          className="p-1.5 hover:bg-white/10 rounded-lg cursor-grab active:cursor-grabbing text-text-dim/30 hover:text-accent transition-all"
+        >
+          <GripVertical className="w-4 h-4" />
+        </button>
+
+        {b.id === activeBankrollId && (
+           <div className="absolute top-0 right-0 w-24 h-24 bg-accent/5 blur-2xl rounded-full translate-x-8 -translate-y-8" />
+        )}
+
+        <div onClick={() => {
+            setActiveBankrollId(b.id);
+            localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', b.id);
+            showToast(`Banca "${b.name}" ativada!`);
+        }} className="flex-1 cursor-pointer relative z-10 py-1">
+            <div className="flex items-center gap-2">
+                <p className="font-black text-sm uppercase">{b.name}</p>
+                {b.id === activeBankrollId && (
+                   <span className="text-[7px] bg-accent text-bg px-1.5 py-0.5 rounded-full font-black animate-pulse flex items-center gap-1">
+                      <Check className="w-2 h-2" />
+                      ATIVA
+                   </span>
+                )}
+            </div>
+            <p className="text-[10px] font-bold text-text-dim uppercase tracking-widest mt-0.5 opacity-60">
+                Inicial: {formatCurrency(b.total)} • Unit: {formatCurrency(b.unitSize)}
+            </p>
+        </div>
+        
+        <div className="flex items-center gap-1 relative z-10">
+            <button 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteBankroll(b.id);
+                }}
+                className="p-2 text-text-dim hover:text-loss transition-colors hover:bg-loss/10 rounded-lg opacity-0 group-hover:opacity-100"
+                title="Excluir Banca"
+            >
+                <Trash2 className="w-4 h-4" />
+            </button>
+            <ChevronRight className={cn(
+               "w-4 h-4 transition-all duration-300",
+               b.id === activeBankrollId ? "text-accent opacity-100" : "text-text-dim opacity-40 group-hover:opacity-100"
+            )} />
+        </div>
+    </motion.div>
+  );
 }

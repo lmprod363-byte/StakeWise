@@ -1,26 +1,37 @@
-# Security Specification - BetStrat
+# Security Specification - StakeWise
 
 ## Data Invariants
-1. A Bet MUST belong to the authenticated user (`userId`).
-2. A Bet status MUST be one of: 'pending', 'won', 'lost', 'void'.
-3. Bankroll values (total, unitSize) MUST be positive numbers.
-4. Timestamps (createdAt, updatedAt) MUST be server-validated.
-5. Users can only read/write their own data (Settings and Bets).
+1. **Ownership**: A user can only read, create, update, or delete data (Bankrolls, Bets, Transactions) that belongs to their specific `uid`.
+2. **Relational Integrity**: 
+   - A `Bet` must have a `bankrollId` that points to a valid `Bankroll` owned by the user.
+   - A `Transaction` must point to a valid `Bankroll` owned by the user.
+3. **Immutability**:
+   - `userId` field must never change after creation.
+   - `createdAt` field must never change after creation.
+4. **Validation**:
+   - All amounts, odds, and stakes must be positive numbers.
+   - Dates must be valid timestamps.
+   - Statuses must be within the defined enum sets.
 
-## The "Dirty Dozen" Payloads (Deny Cases)
-1. Creating a bet for another user (`userId` mismatch).
-2. Updating a bet's `userId` to steal it or move it.
-3. Injecting a massive string (1MB) into the `event` field.
-4. Setting a negative `odds` or `stake`.
-5. Modifying `createdAt` after the bet was created.
-6. Changing bet status to an invalid value like 'cheating'.
-7. A user reading all bets in the system (`list` without owner filter).
-8. Setting `profit` value that doesn't match the odds/stake (validation check).
-9. Updating bankroll `total` without authentication.
-10. Using a script to create millions of tiny bets (rate limiting check - handled by quotas, but enforced via ID length).
-11. Injecting PII into public fields (if we had public fields).
-12. Attempting to update the `winner` status on a settled bet without being the owner.
+## The "Dirty Dozen" Payloads (Red Team Tests)
 
-## Firestore Rules Test Logic
-All write operations must pass `isValidBet()` or `isValidUser()`.
-All read operations must pass `isOwner()`.
+1. **Identity Theft (Create)**: Authenticated User A tries to create a Bet with `userId: "UserB"`.
+2. **Identity Theft (Update)**: User A tries to update User B's Bet.
+3. **Privilege Escalation**: User A tries to change the `userId` of their Bet to `UserB` to "give" it away or hide it.
+4. **Bankroll Hijacking**: User A tries to link a Bet to User B's `bankrollId`.
+5. **Negative Stake**: User tries to create a Bet with `stake: -100`.
+6. **Zero Odds**: User tries to create a Bet with `odds: 0`.
+7. **Invalid Status**: User tries to set `status: "mega-win"` (not in enum).
+8. **Shadow Field Injection**: User tries to add `isAdmin: true` to their user profile.
+9. **Timestamp Spoofing**: User tries to set `createdAt` to a date in 2010.
+10. **Resource Exhaustion**: User tries to use a 1MB string as a `betId` or `selection` name.
+11. **Outcome Manipulation**: User tries to update the `profit` of a Bet without changing the `status` or vice versa in a way that doesn't follow math (though rules can't do complex math, they can check fields).
+12. **Orphaned Writes**: User tries to create a Bet for a `bankrollId` that doesn't exist.
+
+## The Test Runner (Logic Mapping)
+
+The `firestore.rules` will be tested against these invariants using the following logical blocks:
+- `isOwner(userId)`: `request.auth.uid == userId`
+- `isValidBet(data)`: Validates types, sizes, and enums for Bet documents.
+- `isValidBankroll(data)`: Validates types, sizes, and enums for Bankroll documents.
+- `isValidTransaction(data)`: Validates types, sizes, and enums for Transaction documents.

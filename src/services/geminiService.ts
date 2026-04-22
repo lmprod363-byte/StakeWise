@@ -75,14 +75,16 @@ export interface ExtractedBet {
   sport: string;
   league?: string;
   event: string;
-  market: string;
-  selection: string;
+  market: string; // Combined market and selection
+  selection: string; // Keep for legacy compatibility but AI should put info in market
   odds: number;
   stake: number;
   date?: string; // ISO format or descriptive
   isLive?: boolean;
   betId?: string;
   bookmaker?: string;
+  status?: 'pending' | 'won' | 'lost' | 'void' | 'cashout' | 'half_win' | 'half_loss';
+  cashoutValue?: number;
 }
 
 export interface BetOutcome {
@@ -168,15 +170,44 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   const prompt = `Analise este print de aposta esportiva e extraia minuciosamente todos os dados disponíveis. 
   
   DADOS REQUERIDOS:
-  1. Esporte: (ex: Futebol, Basquete, E-sports)
-  2. Competição/Liga: (ex: Premier League, NBA, CBLOL) - MUITO IMPORTANTE
+  1. Esporte: (ex: Futebol, Basquete)
+  2. Competição/Liga: (ex: Premier League, NBA)
+     - IMPORTANTE: Se a Competição/Liga não estiver escrita explicitamente no print, mas você identificar o nome dos times e a data da partida, use a ferramenta Google Search para descobrir a qual liga esse jogo pertence naquela data específica. 
+     - Se não houver nomes de times no print ou se for uma aposta de longo prazo sem data clara, ignore esta busca de liga externa.
   3. Evento: (ex: Real Madrid x Barcelona)
-  4. Mercado: (ex: Resultado Final, Ambas Marcam, Handicap de Escanteios)
-  5. Seleção: (ex: Real Madrid, Sim, Mais de 2.5)
-  6. Odds: O valor da cotação
-  7. Stake: O valor apostado (em números)
-  8. ID da Aposta: O código de referência ou ID da transação da casa de aposta
-  9. Casa de Aposta: Identifique a marca (ex: Bet365, Betano, Betfair, Sportingbet, Blaze, etc.)
+  4. Mercado e Seleção (UNIFICADOS): Combine o mercado e a escolha específica em um único campo chamado 'market'. 
+     Exemplo: Se o mercado é 'Ambas Marcam' e a seleção é 'Sim', retorne 'Ambas Marcam: Sim'.
+     Exemplo: Se é 'Resultado Final' e a seleção é 'Real Madrid', retorne 'Vencedor: Real Madrid'.
+     IMPORTANTE: Coloque todos os detalhes técnicos da aposta (linhas de handicap, over/under, etc) neste campo 'market'.
+  5. Odds: O valor da cotação
+  6. Stake: O valor apostado (em números)
+  7. ID da Aposta: Referência ou ID da transação
+  8. Casa de Aposta: Identifique a marca (ex: Bet365, Betano)
+  
+  STATUS E RESULTADO (LEITURA REFINADA E EXTREMA PRECISÃO):
+  Verifique minuciosamente se a aposta já foi FINALIZADA/RESOLVIDA. Não ignore nenhum detalhe visual.
+  
+  PROCEDIMENTO DE ANALISE:
+  1. CORES: 
+     - VERDE/AZUL ESCURO: Geralmente indica 'won' (Vencida).
+     - VERMELHO/ROSA/LARANJA ESCURO: Geralmente indica 'lost' (Perdida).
+     - CINZA/AMARELO: Pode ser 'pending' (Pendente) ou 'void' (Anulada).
+  2. ÍCONES: 
+     - Check/Visto (✓): Indica acerto ('won').
+     - X: Indica erro ('lost').
+     - Moeda/Saco de Dinheiro: Indica 'cashout'.
+     - Seta de retorno: Indica 'void' (Anulada).
+  3. TERMOS CHAVE:
+     - 'WON', 'GANHA', 'VENCIDA', 'PAGA', 'SETTLED', 'SUCCESSFUL': Status 'won'.
+     - 'LOST', 'PERDIDA', 'ERROU', 'UNSUCCESSFUL': Status 'lost'.
+     - 'VOID', 'ANULADA', 'REEMBOLSADA', 'CANCELADA', 'RETURNED': Status 'void'.
+     - 'HALF WON', 'GANHA METADE', 'MEIO GREEN': Status 'half_win'.
+     - 'HALF LOST', 'PERDIDA METADE', 'MEIO RED': Status 'half_loss'.
+     - 'CASHOUT', 'ENCERRADA', 'PAGO ANTECIPADO': Status 'cashout'.
+     - 'PENDING', 'EM ABERTO', 'ATIVA', 'LIVE', 'AO VIVO', 'AGUARDANDO': Status 'pending'.
+  
+  Categorize o 'status' RIGOROSAMENTE como um destes:
+  - 'won', 'lost', 'void', 'half_win', 'half_loss', 'cashout', 'pending'.
   
   DATA E HORÁRIO DO EVENTO:
   1. Identifique a DATA e o HORÁRIO exatos do evento no print. 
@@ -187,7 +218,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   
   REGRAS DE EXTRAÇÃO:
   - Seja extremamente fiel ao que está escrito.
-  - Se não encontrar um campo específico, deixe-o vazio ou nulo, mas não invente.
+  - Se não houver clareza sobre o resultado, prefira 'pending' para não induzir o usuário ao erro.
   
   Responda obrigatoriamente no formato JSON estruturado seguindo o schema.`;
 
@@ -210,23 +241,30 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
           ],
         },
         config: {
+          tools: [{ googleSearch: {} }],
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              sport: { type: Type.STRING, description: "Esporte (ex: Futebol, Tênis)" },
-              league: { type: Type.STRING, description: "Liga ou competição (ex: Brasileirão Série A)" },
-              event: { type: Type.STRING, description: "Nome do evento (ex: Real Madrid x Barcelona)" },
-              market: { type: Type.STRING, description: "Mercado da aposta (ex: Resultado Final, Ambas Marcam)" },
-              selection: { type: Type.STRING, description: "Seleção escolhida (ex: Real Madrid, Sim, Over 2.5)" },
+              sport: { type: Type.STRING, description: "Esporte" },
+              league: { type: Type.STRING, description: "Liga" },
+              event: { type: Type.STRING, description: "Nome do evento" },
+              market: { type: Type.STRING, description: "Mercado e Seleção unificados (ex: Ambas Marcam: Sim)" },
+              selection: { type: Type.STRING, description: "Repita o valor do market aqui" },
               odds: { type: Type.NUMBER, description: "Valor da odd" },
-              stake: { type: Type.NUMBER, description: "Valor do investimento (valor numérico)" },
-              date: { type: Type.STRING, description: "Data e hora do evento formatada em ISO 8601 (YYYY-MM-DDTHH:mm:ss)" },
-              isLive: { type: Type.BOOLEAN, description: "Verdadeiro se for uma entrada ao vivo" },
-              betId: { type: Type.STRING, description: "ID ou Referência da aposta na casa" },
-              bookmaker: { type: Type.STRING, description: "Nome da casa de aposta identificada" },
+              stake: { type: Type.NUMBER, description: "Valor do investimento" },
+              date: { type: Type.STRING, description: "Data ISO 8601" },
+              isLive: { type: Type.BOOLEAN, description: "Entrada ao vivo" },
+              betId: { type: Type.STRING, description: "ID da aposta" },
+              bookmaker: { type: Type.STRING, description: "Casa de aposta" },
+              status: { 
+                type: Type.STRING, 
+                enum: ['pending', 'won', 'lost', 'void', 'cashout', 'half_win', 'half_loss'],
+                description: "Status atual da aposta detectado no print"
+              },
+              cashoutValue: { type: Type.NUMBER, description: "Valor recebido em caso de cashout" },
             },
-            required: ["sport", "event", "market", "selection", "odds", "stake", "isLive"],
+            required: ["sport", "event", "market", "selection", "odds", "stake", "isLive", "status"],
           },
         },
       });

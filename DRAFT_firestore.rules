@@ -2,6 +2,11 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
     // --- PHASE 3: Primitives ---
     
     function isSignedIn() {
@@ -13,11 +18,7 @@ service cloud.firestore {
     }
 
     function isVerified() {
-      // Mandate verification but include Google as auto-verified in this context to avoid setup friction
-      return isSignedIn() && (
-        request.auth.token.email_verified == true || 
-        request.auth.token.firebase.sign_in_provider == 'google.com'
-      );
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
     function isValidId(id) {
@@ -35,54 +36,55 @@ service cloud.firestore {
     // --- PHASE 4: Validation Blueprints ---
 
     function isValidUser(data) {
-      return (data.get('updatedAt', request.time) is timestamp) &&
-             (data.get('createdAt', request.time) is timestamp) &&
-             (data.get('total', 0) == null || data.get('total', 0) is number) &&
-             (data.get('unitSize', 1) == null || data.get('unitSize', 1) is number) &&
-             (data.get('geminiKey', '') == null || data.get('geminiKey', '').size() <= 200);
+      return data.keys().hasAll(['total', 'unitSize', 'updatedAt']) &&
+             data.total is number &&
+             data.unitSize is number &&
+             data.updatedAt is timestamp;
     }
 
     function isValidBankroll(data) {
-      return (data.get('name', '') is string) && data.get('name', '').size() <= 100 &&
-             (data.get('total', 0) is number) &&
-             (data.get('unitSize', 0) is number) &&
-             (data.get('userId', request.auth.uid) == request.auth.uid) &&
-             (data.get('createdAt', request.time) is timestamp) &&
-             (data.get('updatedAt', request.time) is timestamp);
+      return data.keys().hasAll(['name', 'total', 'unitSize', 'userId', 'createdAt', 'updatedAt']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.total is number &&
+             data.unitSize is number &&
+             data.userId == request.auth.uid &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
     }
 
     function isValidBet(data) {
-      return (data.get('userId', request.auth.uid) == request.auth.uid) &&
-             (data.get('sport', '') is string) && data.get('sport', '').size() <= 64 &&
-             (data.get('event', '') is string) && data.get('event', '').size() <= 128 &&
-             (data.get('odds', 1) is number) &&
-             (data.get('stake', 0) is number) &&
-             (data.get('status', 'pending') in ['pending', 'won', 'lost', 'void', 'cashout', 'half_win', 'half_loss']) &&
-             (data.get('profit', 0) is number) &&
-             (data.get('createdAt', request.time) is timestamp) &&
-             (data.get('updatedAt', request.time) is timestamp) &&
-             (data.get('deleted', false) is bool);
+      let requiredKeys = ['userId', 'bankrollId', 'date', 'sport', 'event', 'market', 'selection', 'odds', 'stake', 'status', 'profit', 'createdAt', 'updatedAt'];
+      return data.keys().hasAll(requiredKeys) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.bankrollId) &&
+             data.sport is string && data.sport.size() <= 64 &&
+             data.event is string && data.event.size() <= 128 &&
+             data.odds is number && data.odds > 0 &&
+             data.stake is number && data.stake >= 0 &&
+             data.status in ['pending', 'won', 'lost', 'void', 'cashout', 'half_win', 'half_loss'] &&
+             data.profit is number &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
     }
 
     function isValidTransaction(data) {
-      return (data.get('userId', request.auth.uid) == request.auth.uid) &&
-             (data.get('amount', 0) is number) &&
-             (data.get('type', 'deposit') in ['withdrawal', 'deposit', 'transfer', 'adjustment']) &&
-             (data.get('createdAt', request.time) is timestamp) &&
-             (data.get('updatedAt', request.time) is timestamp);
+      let requiredKeys = ['userId', 'bankrollId', 'date', 'amount', 'type', 'createdAt', 'updatedAt'];
+      return data.keys().hasAll(requiredKeys) &&
+             data.userId == request.auth.uid &&
+             isValidId(data.bankrollId) &&
+             data.amount is number &&
+             data.type in ['withdrawal', 'deposit', 'transfer', 'adjustment'] &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
     }
 
     // --- PHASE 4: match Blocks ---
 
-    // Connection Test
-    match /test/connection {
-      allow get: if isSignedIn();
-    }
-
     // Users
     match /users/{userId} {
-      allow get: if request.auth != null && request.auth.uid == userId;
-      allow create, update: if request.auth != null && request.auth.uid == userId && isValidUser(incoming()) && incoming().updatedAt == request.time;
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUser(incoming()) && incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) && isValidUser(incoming()) && incoming().updatedAt == request.time;
     }
 
     // Bankrolls
@@ -116,19 +118,11 @@ service cloud.firestore {
                     incoming().createdAt == request.time && 
                     incoming().updatedAt == request.time;
 
-      allow update: if isVerified() && isOwner(existing().userId) && isValidBet(incoming()) && (
-        // Action: Update Status (Sincronização ou Manual)
-        (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'profit', 'updatedAt', 'cashoutValue'])) ||
-        // Action: Edit Bet (Formulário)
-        (incoming().diff(existing()).affectedKeys().hasAny(['event', 'odds', 'stake', 'market', 'selection'])) ||
-        // Action: Soft Delete (with optional migration)
-        (incoming().diff(existing()).affectedKeys().hasAny(['deleted'])) ||
-        // Action: Migration (Add bankrollId/userId to legacy)
-        (incoming().diff(existing()).affectedKeys().hasAny(['bankrollId', 'userId']))
-      ) &&
-      incoming().userId == existing().userId &&
-      incoming().createdAt == existing().createdAt &&
-      incoming().updatedAt == request.time;
+      allow update: if isVerified() && isOwner(existing().userId) && isValidBet(incoming()) &&
+                    incoming().userId == existing().userId &&
+                    incoming().bankrollId == existing().bankrollId &&
+                    incoming().createdAt == existing().createdAt &&
+                    incoming().updatedAt == request.time;
 
       allow delete: if isVerified() && isOwner(existing().userId);
     }
@@ -154,11 +148,6 @@ service cloud.firestore {
                     incoming().updatedAt == request.time;
 
       allow delete: if isVerified() && isOwner(existing().userId);
-    }
-
-    // Default Deny (Bottom)
-    match /{document=**} {
-      allow read, write: if false;
     }
   }
 }

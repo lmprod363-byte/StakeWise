@@ -4,7 +4,7 @@ export default [
   {
     files: ['firestore.rules'],
     plugins: {
-      'firebase-rules': firebaseRulesPlugin,
+      '@firebase/security-rules': firebaseRulesPlugin,
     },
     rules: {
       ...firebaseRulesPlugin.configs['flat/recommended'].rules,

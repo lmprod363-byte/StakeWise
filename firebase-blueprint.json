@@ -5,11 +5,12 @@
       "description": "User configuration and bankroll settings",
       "type": "object",
       "properties": {
-        "total": { "type": "number", "description": "Total bankroll value" },
-        "unitSize": { "type": "number", "description": "Standard unit size" },
+        "total": { "type": "number", "description": "Legacy total bankroll value" },
+        "unitSize": { "type": "number", "description": "Legacy standard unit size" },
+        "geminiKey": { "type": "string", "description": "Stored Gemini API Key" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
-      "required": ["total", "unitSize"]
+      "required": ["updatedAt"]
     },
     "Bet": {
       "title": "Bet Record",

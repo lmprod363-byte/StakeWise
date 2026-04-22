@@ -30,6 +30,7 @@ export interface Bankroll {
   unitSize: number;
   userId: string;
   createdAt: any;
+  order?: number;
 }
 
 export interface Stats {
@@ -38,6 +39,7 @@ export interface Stats {
   totalProfit: number;
   roi: number;
   unitsWon: number;
+  profitPercentage: number;
 }
 
 export interface BankrollStats extends Stats {
