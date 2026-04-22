@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   ArrowRightLeft,
   ArrowUpRight,
@@ -197,7 +197,7 @@ export default function App() {
   const [bulkProgress, setBulkProgress] = useState<{ current: number, total: number } | null>(null);
   const [bulkQueue, setBulkQueue] = useState<Omit<Bet, 'id' | 'profit'>[]>([]);
   const [isManualBookmaker, setIsManualBookmaker] = useState(false);
-  const [successToast, setSuccessToast] = useState<{ message: string, type: 'success' | 'info' } | null>(null);
+  const [successToast, setSuccessToast] = useState<{ message: string, type: 'success' | 'info' | 'loss' } | null>(null);
   const [cashoutBetId, setCashoutBetId] = useState<string | null>(null);
   const [cashoutAmount, setCashoutAmount] = useState("");
   const [isBankrollMenuOpen, setIsBankrollMenuOpen] = useState(false);
@@ -213,7 +213,7 @@ export default function App() {
     });
   };
 
-  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+  const showToast = (message: string, type: 'success' | 'info' | 'loss' = 'success') => {
     setSuccessToast({ message, type });
     setTimeout(() => setSuccessToast(null), 3000);
   };
@@ -897,7 +897,7 @@ export default function App() {
   }, [bets, transactions, activeBankrollId]);
 
   const bookmakerBalances = useMemo(() => {
-    return Object.entries(bookmakerBalancesRaw)
+    return (Object.entries(bookmakerBalancesRaw) as [string, number][])
       .filter(([_, amount]) => Math.abs(amount) > 0.001)
       .sort((a, b) => b[1] - a[1]);
   }, [bookmakerBalancesRaw]);
@@ -912,7 +912,7 @@ export default function App() {
     const totalPendingStakes = pendingBets.reduce((acc, b) => acc + b.stake, 0);
 
     // CRITICAL FIX: The Top Balance is now STICKLY the sum of the VISIBLE lines below it
-    const currentBalance = bookmakerBalances.reduce((acc, [_, bal]) => acc + bal, 0);
+    const currentBalance = (bookmakerBalances as [string, number][]).reduce((acc, [_, bal]) => acc + bal, 0);
     
     return {
       totalProfit,
@@ -921,6 +921,30 @@ export default function App() {
       currentBalance
     };
   }, [bets, bookmakerBalances, activeBankrollId]);
+
+  const prevBankrollIdRef = useRef<string | null>(null);
+  const prevBalanceRef = useRef<number | null>(null);
+  const [balanceDelta, setBalanceDelta] = useState<number | null>(null);
+  const [showBalanceFeedback, setShowBalanceFeedback] = useState(false);
+
+  useEffect(() => {
+    // If we changed bankrolls, just sync the balance and don't show feedback
+    if (prevBankrollIdRef.current !== activeBankrollId) {
+      prevBankrollIdRef.current = activeBankrollId;
+      prevBalanceRef.current = allTimeStats.currentBalance;
+      setShowBalanceFeedback(false);
+      return;
+    }
+
+    if (prevBalanceRef.current !== null && Math.abs(allTimeStats.currentBalance - prevBalanceRef.current) > 0.001) {
+      const delta = allTimeStats.currentBalance - prevBalanceRef.current;
+      setBalanceDelta(delta);
+      setShowBalanceFeedback(true);
+      const timer = setTimeout(() => setShowBalanceFeedback(false), 2500);
+      return () => clearTimeout(timer);
+    }
+    prevBalanceRef.current = allTimeStats.currentBalance;
+  }, [allTimeStats.currentBalance, activeBankrollId]);
 
   const historyTransactions = useMemo(() => {
     return transactions.filter(t => !t.deleted);
@@ -974,6 +998,15 @@ export default function App() {
         };
       });
   }, [filteredBets]);
+
+  const chartRange = useMemo(() => {
+    if (chartData.length === 0) return { min: 0, max: 0, off: 0 };
+    const values = chartData.map(d => d.profit);
+    const max = Math.max(...values, 0);
+    const min = Math.min(...values, 0);
+    if (max === min) return { min, max, off: 0 };
+    return { min, max, off: max / (max - min) };
+  }, [chartData]);
 
   const addBet = async (newBet: Omit<Bet, 'id' | 'profit'>, force = false) => {
     if (!user || !activeBankrollId || isRegistering) return;
@@ -1425,6 +1458,19 @@ export default function App() {
       if (cashoutValue !== undefined) data.cashoutValue = cashoutValue;
 
       await updateDoc(doc(db, 'bets', id), data);
+
+      if (status !== 'pending') {
+        const labels: Record<string, string> = {
+          'won': 'GANHA',
+          'lost': 'PERDIDA',
+          'half_win': 'MEIO GANHA',
+          'half_loss': 'MEIO PERDIDA',
+          'void': 'REEMBOLSADA',
+          'cashout': 'CASHOUT'
+        };
+        const impact = data.profit;
+        showToast(`${labels[status] || 'ATUALIZADA'}: ${impact >= 0 ? '+' : ''}${formatCurrency(impact)}`, impact >= 0 ? 'success' : 'loss');
+      }
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
     }
@@ -2070,9 +2116,38 @@ export default function App() {
               </div>
             </div>
 
-            <p className="text-text-main text-2xl font-extrabold tracking-tight relative z-10 mb-4">
-              {formatCurrency(allTimeStats.currentBalance)}
-            </p>
+            <div className="relative">
+              <motion.p 
+                key={allTimeStats.currentBalance}
+                initial={{ scale: 1.1, filter: 'brightness(1.5)' }}
+                animate={{ scale: 1, filter: 'brightness(1)' }}
+                transition={{ type: "spring", stiffness: 300, damping: 20 }}
+                className="text-text-main text-2xl font-extrabold tracking-tight relative z-10 mb-1"
+              >
+                {formatCurrency(allTimeStats.currentBalance)}
+              </motion.p>
+            </div>
+
+            <AnimatePresence>
+              {showBalanceFeedback && balanceDelta !== null && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9, y: -5 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  exit={{ opacity: 0, scale: 0.9, y: 5 }}
+                  className={cn(
+                    "relative z-20 overflow-hidden rounded-full border py-1 px-3 mb-3 flex items-center justify-center gap-2 backdrop-blur-md mx-auto w-fit",
+                    balanceDelta < 0 
+                      ? "bg-loss/10 border-loss/20 text-loss shadow-[0_2px_10px_rgba(239,68,68,0.1)]" 
+                      : "bg-accent/10 border-accent/20 text-accent shadow-[0_2px_10px_rgba(16,185,129,0.1)]"
+                  )}
+                >
+                  {balanceDelta < 0 ? <TrendingDown className="w-3 h-3" /> : <TrendingUp className="w-3 h-3" />}
+                  <span className="text-[10px] font-black tabular-nums tracking-tighter leading-none">
+                    {balanceDelta < 0 ? '-' : '+'} {formatCurrency(Math.abs(balanceDelta))}
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Bookmaker breakdown in Balance Card */}
             <div className="space-y-1 relative z-10 border-t border-border/10 pt-4">
@@ -2139,9 +2214,31 @@ export default function App() {
                 >
                     <LogOut className="w-5 h-5" />
                 </button>
-                <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center min-w-[80px]">
+                <div className="bg-surface px-3 py-1.5 rounded-lg border border-border flex flex-col items-center min-w-[80px] relative">
+                    <AnimatePresence>
+                      {showBalanceFeedback && balanceDelta !== null && (
+                        <motion.div
+                          initial={{ opacity: 0, y: 5, scale: 0.5 }}
+                          animate={{ opacity: 1, y: -35, scale: 1.1 }}
+                          exit={{ opacity: 0 }}
+                          className={cn(
+                            "absolute top-0 right-0 font-black text-[10px] z-50 pointer-events-none whitespace-nowrap px-2 py-1 rounded-full border shadow-xl flex items-center gap-1",
+                            balanceDelta < 0 ? "bg-loss text-white border-loss shadow-loss/20" : "bg-accent text-bg border-accent shadow-accent/20"
+                          )}
+                        >
+                          {balanceDelta < 0 ? <TrendingDown className="w-2 h-2" /> : <TrendingUp className="w-2 h-2" />}
+                          {balanceDelta < 0 ? '-' : '+'} {formatCurrency(Math.abs(balanceDelta))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                     <span className="text-[7px] font-black uppercase tracking-widest text-text-dim">Saldo</span>
-                    <span className="text-[10px] font-black text-accent">{formatCurrency(allTimeStats.currentBalance)}</span>
+                    <motion.span 
+                      key={allTimeStats.currentBalance}
+                      animate={showBalanceFeedback ? { scale: [1, 1.2, 1], color: balanceDelta && balanceDelta < 0 ? ['#ef4444', '#10b981'] : undefined } : {}}
+                      className="text-[10px] font-black text-accent"
+                    >
+                      {formatCurrency(allTimeStats.currentBalance)}
+                    </motion.span>
                 </div>
                 <button 
                     onClick={() => setActiveTab('register')}
@@ -2293,8 +2390,12 @@ export default function App() {
                       <AreaChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <defs>
                           <linearGradient id="profitGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#00FF95" stopOpacity={0.2}/>
-                            <stop offset="100%" stopColor="#00FF95" stopOpacity={0}/>
+                            <stop offset={chartRange.off} stopColor="#00FF95" stopOpacity={0.25}/>
+                            <stop offset={chartRange.off} stopColor="#FF3E3E" stopOpacity={0.25}/>
+                          </linearGradient>
+                          <linearGradient id="strokeGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset={chartRange.off} stopColor="#00FF95" stopOpacity={1}/>
+                            <stop offset={chartRange.off} stopColor="#FF3E3E" stopOpacity={1}/>
                           </linearGradient>
                         </defs>
                         <CartesianGrid vertical={false} stroke="#FFFFFF" opacity={0.03} />
@@ -2335,13 +2436,13 @@ export default function App() {
                         <Area 
                           type="monotone" 
                           dataKey="profit" 
-                          stroke="#00FF95" 
-                          strokeWidth={4} 
+                          stroke="url(#strokeGradient)" 
+                          strokeWidth={2} 
                           fillOpacity={1} 
                           fill="url(#profitGradient)" 
                           animationDuration={2000}
                           baseLine={0}
-                          activeDot={{ r: 6, fill: '#00FF95', stroke: '#0B0D11', strokeWidth: 2 }}
+                          activeDot={{ r: 4, fill: (data: any) => data.payload.profit >= 0 ? '#00FF95' : '#FF3E3E', stroke: '#0B0D11', strokeWidth: 1 }}
                         />
                       </AreaChart>
                     </ResponsiveContainer>
@@ -5555,13 +5656,19 @@ export default function App() {
           >
             <div className={cn(
               "glass-card px-6 py-4 flex items-center gap-4 border-l-4",
-              successToast.type === 'success' ? "border-accent shadow-accent/20" : "border-text-dim shadow-black/40"
+              successToast.type === 'success' ? "border-accent shadow-accent/20" : 
+              successToast.type === 'loss' ? "border-loss shadow-loss/20" :
+              "border-text-dim shadow-black/40"
             )}>
               <div className={cn(
                 "p-2 rounded-lg flex-shrink-0",
-                successToast.type === 'success' ? "bg-accent/10 text-accent" : "bg-text-dim/10 text-text-dim"
+                successToast.type === 'success' ? "bg-accent text-bg" : 
+                successToast.type === 'loss' ? "bg-loss text-white" :
+                "bg-text-dim/10 text-text-dim"
               )}>
-                <CheckCircle2 className="w-5 h-5" />
+                {successToast.type === 'success' ? <TrendingUp className="w-5 h-5" /> : 
+                 successToast.type === 'loss' ? <TrendingDown className="w-5 h-5" /> :
+                 <CheckCircle2 className="w-5 h-5" />}
               </div>
               <p className="text-[10px] font-black uppercase tracking-widest leading-tight text-text-main">
                 {successToast.message}
