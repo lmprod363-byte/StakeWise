@@ -90,6 +90,8 @@ export interface ExtractedBet {
 export interface BetOutcome {
   status: 'won' | 'lost' | 'void' | 'pending';
   reason: string;
+  score?: string; // Placar ou estatística principal (ex: "2-1")
+  matchTime?: string; // Tempo de jogo (ex: "45' (1T)")
 }
 
 export interface AIInsight {
@@ -106,22 +108,20 @@ export async function checkBetResult(
 ): Promise<BetOutcome> {
   const model = "gemini-3-flash-preview";
   
-  const prompt = `Consulte os resultados reais na internet para determinar o status desta aposta.
+  const prompt = `Consulte os resultados reais na internet para determinar o status e o placar ATUAL desta aposta.
   Evento: ${event}
   Data prevista: ${date}
   Mercado: ${market}
   Seleção: ${selection}
 
   Instruções:
-  1. Use a pesquisa do Google para encontrar o placar, estatísticas detalhadas e súmula do jogo.
-  2. Esta IA deve ser capaz de validar mercados complexos como:
-     - Cartões (Amarelos/Vermelhos, para jogadores específicos ou times).
-     - Escanteios (Cantos totais, por tempo ou para um time específico).
-     - Faltas e finalizações (Estatísticas de performance de jogadores).
-     - Resultados por tempo (1º Tempo / 2º Tempo).
-  3. Determine se a aposta foi 'won' (vencida), 'lost' (perdida) ou 'void' (anulada/reembolsada).
-  4. Se o evento ainda não terminou ou os dados estatísticos específicos (ex: número exato de cantos) não forem encontrados de forma clara, retorne 'pending'.
-  5. Seja extremamente rigoroso. Se não tiver certeza absoluta baseada nos dados da internet, retorne 'pending'.
+  1. Use a pesquisa do Google para encontrar o placar AO VIVO ou FINAL e o tempo de jogo ATUAL.
+  2. Se a partida estiver em andamento, extraia o minuto e o tempo (ex: 45' 1T, 80' 2T).
+  3. Preencha o campo 'matchTime' no formato: "[Minutos] ([Tempo])". Exemplo: "62' (2T)", "HT (Intervalo)", "FT (Encerrado)".
+  4. Determine se a aposta foi 'won' (vencida), 'lost' (perdida), 'void' (anulada) ou continua 'pending'.
+  5. Se o evento ainda não terminou, retorne 'status': 'pending', mas OBRIGATORIAMENTE preencha os campos 'score' (placar atual) e 'matchTime'.
+  6. Para o campo 'score', use o formato "X-Y" (se aplicável ao esporte).
+  7. Seja extremamente rigoroso.
 
   Responda obrigatoriamente em JSON.`;
 
@@ -137,11 +137,17 @@ export async function checkBetResult(
           status: { 
             type: Type.STRING, 
             enum: ['won', 'lost', 'void', 'pending'],
-            description: "O status final da aposta após verificar o resultado real."
           },
           reason: { 
             type: Type.STRING, 
-            description: "Breve explicação do porquê desse status (ex: 'Real Madrid venceu por 2-1')" 
+          },
+          score: {
+            type: Type.STRING,
+            description: "Placar atual ou final (ex: '2-1')"
+          },
+          matchTime: {
+            type: Type.STRING,
+            description: "Minuto e período do jogo (ex: '45 (1T)', 'FT')"
           }
         },
         required: ["status", "reason"],

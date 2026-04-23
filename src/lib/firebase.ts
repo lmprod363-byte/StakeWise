@@ -42,11 +42,17 @@ export const signInWithGoogle = async (forceRedirect = false) => {
     console.log("Usando Popup de Auth...");
     return await signInWithPopup(auth, googleProvider);
   } catch (error: any) {
-    console.error("Erro detalhado na autenticação:", error);
-    
     const errorCode = error.code || '';
     const currentDomain = window.location.hostname || "seu-dominio.com";
 
+    if (errorCode === 'auth/popup-closed-by-user' || errorCode === 'auth/cancelled-popup-request') {
+      // Se voltarmos nulo, o App.tsx entende que não houve erro drástico, mas o login não ocorreu.
+      // Vamos lançar um erro informativo apenas para que o usuário saiba que pode usar o link alternativo se o popup fechar sozinho.
+      throw new Error('JANELA DE LOGIN FECHADA: Se você não fechou a janela propositalmente, o seu navegador pode estar bloqueando a autenticação. Tente o "Link Alternativo" abaixo.');
+    }
+
+    console.error("Erro detalhado na autenticação:", error);
+    
     if (errorCode === 'auth/unauthorized-domain') {
       throw new Error(`DOMÍNIO NÃO AUTORIZADO: Adicione '${currentDomain}' na lista de 'Domínios Autorizados' no Console do Firebase (Authentication > Settings).`);
     }

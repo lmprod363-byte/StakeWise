@@ -19,6 +19,9 @@ export interface Bet {
   cashoutValue?: number;
   betId?: string;
   isLive?: boolean;
+  score?: string;
+  matchTime?: string;
+  autoSync?: boolean;
   deleted?: boolean;
   bankrollId: string;
 }

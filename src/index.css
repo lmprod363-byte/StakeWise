@@ -14,6 +14,8 @@
   --color-refund: #FFB800;
   --color-text-main: #FFFFFF;
   --color-text-dim: #7C828D;
+  
+  --animate-spin-slow: spin 3s linear infinite;
 }
 
 @layer base {

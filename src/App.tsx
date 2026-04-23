@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, memo } from 'react';
 import { 
   ArrowRightLeft,
   ArrowUpRight,
@@ -26,6 +26,8 @@ import {
   Pencil,
   ImagePlus,
   Loader2,
+  Play,
+  RefreshCw,
   Camera,
   Sparkles,
   Square,
@@ -71,7 +73,6 @@ import {
 } from 'recharts';
 import { format, isAfter, subDays, subHours, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { GoogleAd } from './components/GoogleAd';
 import { 
   collection, 
   onSnapshot, 
@@ -114,6 +115,87 @@ const getBookmakerLogo = (name: string) => {
   return <span className="font-black text-sm uppercase">{name.charAt(0)}</span>;
 };
 
+// --- OPTIMIZATION HELPERS MOVED OUTSIDE ---
+const isMatchOngoing = (date: string) => {
+  const start = safeNewDate(date).getTime();
+  const now = Date.now();
+  return start <= now && (now - start) < (105 * 60 * 1000); // 105 min timeout
+};
+
+const RenderEventWithScore = memo(({ event, score, matchTime, mobile = false }: { event: string; score?: string; matchTime?: string; mobile?: boolean }) => {
+  if (!score) return <>{event}</>;
+
+  const separators = [' — ', ' x ', ' X ', ' vs ', ' VS ', ' v ', ' V '];
+  let foundSeparator = '';
+  
+  for (const sep of separators) {
+    if (event.includes(sep)) {
+      foundSeparator = sep;
+      break;
+    }
+  }
+
+  const scoreClasses = cn(
+    "inline-flex items-center whitespace-nowrap",
+    mobile 
+      ? "bg-accent/20 text-accent px-1.5 py-0.5 rounded-full text-[9px] font-black border border-accent/30 mx-1 shadow-[0_0_10px_rgba(0,255,149,0.1)]"
+      : "bg-accent/10 text-accent px-1.5 py-0.5 rounded-md text-[9px] font-black border border-accent/20 mx-2 shadow-[0_0_10px_rgba(0,255,149,0.1)]"
+  );
+
+  const renderScoreContent = () => (
+    <span className={scoreClasses}>
+      {score}
+      {matchTime && <span className="ml-1 text-[8px] opacity-70 font-medium">({matchTime})</span>}
+    </span>
+  );
+
+  if (foundSeparator) {
+    const parts = event.split(foundSeparator);
+    return (
+      <span>
+        {parts[0]}
+        {renderScoreContent()}
+        {parts[1]}
+      </span>
+    );
+  }
+
+  return (
+    <>
+      {event}
+      <span className="ml-2">{renderScoreContent()}</span>
+    </>
+  );
+});
+
+const SyncProgressBar = memo(({ className }: { className?: string }) => {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    // Sincroniza o progresso com o ciclo de 3 minutos (180.000ms)
+    const update = () => {
+      const now = Date.now();
+      const cycleMs = 180000;
+      const elapsed = now % cycleMs;
+      setProgress((elapsed / cycleMs) * 100);
+    };
+    
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className={cn("bg-white/5 rounded-full overflow-hidden relative", className)}>
+      <motion.div 
+        animate={{ width: `${progress}%` }}
+        transition={{ duration: 1, ease: "linear" }}
+        className="absolute inset-y-0 left-0 bg-accent shadow-[0_0_10px_rgba(0,255,149,0.5)]"
+      />
+    </div>
+  );
+});
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -142,6 +224,8 @@ export default function App() {
   const [showEditModal, setShowEditModal] = useState(false);
   const [duplicateWarning, setDuplicateWarning] = useState<null | { confirmed: boolean, data: Omit<Bet, 'id' | 'profit'> }>(null);
   const [isSyncingResults, setIsSyncingResults] = useState(false);
+  const [isSyncingScores, setIsSyncingScores] = useState(false);
+  const [manualSyncProgress, setManualSyncProgress] = useState(0); // 0 a 100 para manual
   const [isRegistering, setIsRegistering] = useState(false);
   const [syncingBetId, setSyncingBetId] = useState<string | null>(null);
   const [selectedBetIds, setSelectedBetIds] = useState<Set<string>>(new Set());
@@ -203,6 +287,34 @@ export default function App() {
   const [isBankrollMenuOpen, setIsBankrollMenuOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
+  const [showSyncBanner, setShowSyncBanner] = useState(false);
+
+  useEffect(() => {
+    const hasPending = bets.some(b => b.status === 'pending' && !b.deleted);
+    if (hasPending && activeTab === 'dashboard') {
+      setShowSyncBanner(true);
+    }
+  }, [bets.length, activeTab]);
+
+  useEffect(() => {
+    // Sistema Único Automático: Atualização de Placares (Frequente)
+    // O status da aposta (Ganha/Perdida) só é atualizado manualmente via botão
+    let mainSyncInterval: NodeJS.Timeout;
+
+    const startIntervals = () => {
+      mainSyncInterval = setInterval(() => {
+        if (user) {
+          syncOnlyScores();
+        }
+      }, 600000); // 10 minutos
+    };
+
+    startIntervals();
+
+    return () => {
+      clearInterval(mainSyncInterval);
+    };
+  }, [bets.length, user]);
 
   const toggleDateCollapse = (date: string) => {
     setCollapsedDates(prev => {
@@ -1156,35 +1268,48 @@ export default function App() {
     }
   };
 
-  const syncResults = async (specificBets?: Bet[]) => {
+  const syncResults = async (specificBets?: Bet[], silent = false) => {
     if (!user || isSyncingResults) return;
     
     // If specificBets provided, use them; otherwise, use all pending/non-deleted ones
     const betsToSync = specificBets || bets.filter(b => b.status === 'pending' && !b.deleted);
     
     if (betsToSync.length === 0) {
-      alert("Não há apostas selecionadas ou pendentes para sincronizar.");
+      if (!silent) alert("Não há apostas selecionadas ou pendentes para sincronizar.");
       return;
     }
 
     setIsSyncingResults(true);
+    setManualSyncProgress(0);
     try {
+      let completed = 0;
       for (const bet of betsToSync) {
         setSyncingBetId(bet.id);
         const result = await checkBetResult(bet.event, bet.market, bet.selection, bet.date);
+        
+        // Sincronização de RESULTADO: Só altera se a aposta foi resolvida (ganha/perdida/anulada)
         if (result.status !== 'pending') {
-          await updateStatus(bet.id, result.status);
+          await updateStatus(bet.id, result.status, undefined, result.score);
+        } else if (result.score) {
+          // Se ainda pendente mas trouxe placar, atualiza apenas o placar
+          await updateBetScore(bet.id, result.score, result.matchTime);
         }
+        
+        completed++;
+        setManualSyncProgress((completed / betsToSync.length) * 100);
         setSyncingBetId(null);
       }
       setSelectedBetIds(new Set()); // Limpa seleção após sincronizar
-      alert("Sincronização concluída!");
+      if (!silent) showToast("Sincronização concluída!", "success");
+      else showToast("Resultados atualizados!", "success");
+      setShowSyncBanner(false);
     } catch (error) {
       console.error("Erro na sincronização:", error);
-      alert("Erro ao sincronizar. Verifique sua conexão ou tente novamente.");
+      if (!silent) showToast("Erro ao sincronizar. Verifique sua conexão.", "info");
     } finally {
       setIsSyncingResults(false);
       setSyncingBetId(null);
+      setTimeout(() => setManualSyncProgress(0), 1000);
     }
   };
 
@@ -1204,51 +1329,53 @@ export default function App() {
 
     try {
       const dataToUpdate: any = {
-        ...updatedData,
         profit: calculateProfit(finalStake, finalOdds, finalStatus, finalCashout),
         updatedAt: serverTimestamp()
       };
 
-      // Garantir que apostas legadas recebam o bankrollId e userId
-      if (!bet.bankrollId) {
-        dataToUpdate.bankrollId = activeBankrollId;
-      }
-      if (!bet.userId) {
-        dataToUpdate.userId = user.uid;
-      }
-
-      // Lista de campos permitidos pelas regras ATUAIS (sem a atualização do setup)
       const allowedFields = [
         'status', 'profit', 'updatedAt', 'odds', 'stake', 
         'selection', 'market', 'event', 'sport', 'league', 'date', 
         'deleted', 'cashoutValue', 'notes', 'bookmaker', 'bankrollId', 'userId',
-        'betId', 'isLive'
+        'betId', 'isLive', 'score', 'matchTime', 'autoSync'
       ];
 
-      // Só envia o que mudou E o que as regras permitem
+      // Add common identification fields if missing
+      if (!bet.bankrollId) dataToUpdate.bankrollId = activeBankrollId;
+      if (!bet.userId) dataToUpdate.userId = user.uid;
+
+      // Only add fields that are in the allowed list AND have actually changed
       Object.entries(updatedData).forEach(([key, value]) => {
-        if (allowedFields.includes(key) && value !== (bet as any)[key]) {
-          dataToUpdate[key] = value;
+        if (allowedFields.includes(key)) {
+          // Check if value is different from existing bet value
+          if (value !== (bet as any)[key]) {
+            dataToUpdate[key] = value;
+          }
         }
       });
 
-      // Remova undefined para evitar erro do Firestore
+      // Clear undefined values just in case
       Object.keys(dataToUpdate).forEach(key => dataToUpdate[key] === undefined && delete dataToUpdate[key]);
 
-      if (Object.keys(dataToUpdate).length <= 2) { // Apenas profit e updatedAt? Nada mudou.
+      // If only profit and updatedAt are present, it means nothing significant changed
+      const changesCount = Object.keys(dataToUpdate).filter(k => k !== 'profit' && k !== 'updatedAt').length;
+      if (changesCount === 0) {
         setEditingBetId(null);
+        setShowEditModal(false);
         return;
       }
 
       await updateDoc(doc(db, 'bets', id), dataToUpdate);
-      showToast("Aposta atualizada com sucesso!", "info");
+      showToast("Aposta atualizada com sucesso!", "success");
       setEditingBetId(null);
       setIsManualBookmaker(false);
       setShowEditModal(false);
     } catch (error) {
       console.error("Erro ao atualizar aposta:", error);
       if (error instanceof Error && error.message.includes('permissions')) {
-         showToast("Erro de permissão no Firebase. Tente reconfigurar o App nos Ajustes.", "info");
+         showToast("Erro de permissão no Firebase. Verifique sua conexão.", "info");
+      } else {
+         showToast("Erro ao salvar alterações.", "loss");
       }
     }
   };
@@ -1434,7 +1561,60 @@ export default function App() {
     }
   };
 
-  const updateStatus = async (id: string, status: Bet['status'], cashoutValue?: number) => {
+  const updateBetScore = async (id: string, score: string, matchTime?: string) => {
+    if (!user) return;
+    try {
+      const data: any = {
+        score,
+        updatedAt: serverTimestamp()
+      };
+      if (matchTime) data.matchTime = matchTime;
+      
+      await updateDoc(doc(db, 'bets', id), data);
+    } catch (error) {
+      console.error("Erro ao atualizar placar:", error);
+    }
+  };
+
+  const syncOnlyScores = async (specificBets?: Bet[]) => {
+    if (!user || isSyncingResults || isSyncingScores) return;
+    
+    const now = new Date();
+    const MATCH_TIMEOUT_MS = 105 * 60 * 1000; // 105 minutos (90 + acréscimos)
+    
+    // Filtra apenas apostas pendentes e não deletadas
+    // Se for manual (specificBets), ignora o filtro autoSync. Se for automático, exige autoSync: true.
+    const betsToSync = (specificBets || bets.filter(b => b.status === 'pending' && !b.deleted && b.autoSync))
+      .filter(b => {
+        const matchStart = safeNewDate(b.date).getTime();
+        const diff = now.getTime() - matchStart;
+        // Começa a sincronizar se estiver no horário (ou até 2 min antes) 
+        // e para após 105 minutos do início
+        return diff >= -120000 && diff < MATCH_TIMEOUT_MS;
+      })
+      .slice(0, 5);
+
+    if (betsToSync.length === 0) return;
+
+    setIsSyncingScores(true);
+    try {
+      for (const bet of betsToSync) {
+        setSyncingBetId(bet.id);
+        const result = await checkBetResult(bet.event, bet.market, bet.selection, bet.date);
+        if (result.score) {
+          await updateBetScore(bet.id, result.score, result.matchTime);
+        }
+        setSyncingBetId(null);
+      }
+    } catch (error) {
+      console.error("Erro na sincronização de placares:", error);
+    } finally {
+      setIsSyncingScores(false);
+      setSyncingBetId(null);
+    }
+  };
+
+  const updateStatus = async (id: string, status: Bet['status'], cashoutValue?: number, score?: string) => {
     if (!user || !activeBankrollId) {
       if (!user) return;
       showToast("Selecione uma banca ativa primeiro.", "info");
@@ -1450,6 +1630,10 @@ export default function App() {
         profit: calculateProfit(bet.stake, bet.odds, status, finalCashout),
         updatedAt: serverTimestamp()
       };
+
+      if (score !== undefined) {
+        data.score = score;
+      }
       
       // Auto-migrate legacy bets
       if (!bet.bankrollId) data.bankrollId = activeBankrollId;
@@ -1473,6 +1657,17 @@ export default function App() {
       }
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
+    }
+  };
+
+  const toggleAutoSync = async (id: string, current: boolean) => {
+    try {
+      await updateDoc(doc(db, 'bets', id), { 
+        autoSync: !current,
+        updatedAt: serverTimestamp()
+      });
+    } catch (error) {
+      console.error("Erro ao alternar auto-sync:", error);
     }
   };
 
@@ -2278,6 +2473,43 @@ export default function App() {
               }}
               className="space-y-8"
             >
+              <AnimatePresence>
+                {showSyncBanner && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    className="glass-card p-4 border-accent/20 bg-accent/5 flex items-center justify-between gap-4"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-accent/10 rounded-lg">
+                        <RefreshCw className={cn("w-4 h-4 text-accent", isSyncingResults && "animate-spin")} />
+                      </div>
+                      <div>
+                        <p className="text-[10px] font-black uppercase tracking-widest text-text-main">Resultados Pendentes</p>
+                        <p className="text-[9px] text-text-dim uppercase tracking-tight">Existem partidas no seu histórico aguardando resultado.</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => setShowSyncBanner(false)}
+                        className="px-3 py-1.5 text-[9px] font-black uppercase text-text-dim hover:text-text-main"
+                      >
+                        Agora não
+                      </button>
+                      <button 
+                        onClick={() => syncResults(undefined, true)}
+                        disabled={isSyncingResults}
+                        className="bg-accent text-bg px-4 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest flex items-center gap-2"
+                      >
+                        {isSyncingResults ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                        Sincronizar Agora
+                      </button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
               {/* Range Selectors */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
@@ -2890,7 +3122,6 @@ export default function App() {
               }}
               className="space-y-6"
             >
-              <GoogleAd />
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="relative w-full lg:max-w-sm">
                   <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
@@ -3111,6 +3342,37 @@ export default function App() {
               </div>
 
               <div className="space-y-12">
+                {isSyncingResults && (
+                  <motion.div 
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="bg-accent/5 border border-accent/20 rounded-2xl p-6 mb-8 relative overflow-hidden shadow-2xl"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-accent/20 flex items-center justify-center">
+                          <div className="relative">
+                            <Loader2 className="w-5 h-5 text-accent animate-spin" />
+                            <Sparkles className="w-2.5 h-2.5 text-accent absolute -top-1 -right-1" />
+                          </div>
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-black uppercase tracking-widest text-text-main">Sincronizando Apostas</h3>
+                          <p className="text-[10px] text-text-dim/70 font-medium">Extraindo placares e resultados reais com inteligência artificial...</p>
+                        </div>
+                      </div>
+                      <span className="text-sm font-black font-mono text-accent">{Math.round(manualSyncProgress)}%</span>
+                    </div>
+                    <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden shadow-inner">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${manualSyncProgress}%` }}
+                        transition={{ duration: 0.5 }}
+                        className="h-full bg-accent shadow-[0_0_20px_rgba(0,255,149,0.5)]"
+                      />
+                    </div>
+                  </motion.div>
+                )}
                 {groupedHistory.map(([date, group]: [string, any]) => {
                   const isCollapsed = collapsedDates.has(date);
                   
@@ -3286,8 +3548,13 @@ export default function App() {
                                               </div>
                                               <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
                                                 {format(safeNewDate(bet.date), "HH:mm")} 
-                                                {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
-                                                • {bet.event} 
+                                                {isMatchOngoing(bet.date) && bet.autoSync && (
+                                                  <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
+                                                    <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
+                                                    AO VIVO
+                                                  </span>
+                                                )}
+                                                • <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} />
                                                 {bet.league && <span className="opacity-60">• {bet.league}</span>}
                                                 {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
                                                 {(bet.bookmaker || 'Geral') && (
@@ -3301,6 +3568,11 @@ export default function App() {
                                                     <div className={cn("w-2 h-2 rounded-full animate-pulse shadow-[0_0_8px_currentColor] bg-current")} />
                                                     {bet.bookmaker || 'Geral'}
                                                   </span>
+                                                )}
+
+                                                {/* Progress Bar Sincronia Automática */}
+                                                {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date)) && (
+                                                  <SyncProgressBar className="w-full max-w-[120px] h-0.5 mt-2" />
                                                 )}
                                               </div>
                                             </div>
@@ -3338,6 +3610,50 @@ export default function App() {
                                         <td className="px-6 py-5 rounded-r-2xl text-right">
                                           <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
                                               <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
+                                                {/* Botão Auto Sync (Toggle) */}
+                                                {bet.status === 'pending' && (
+                                                  <button 
+                                                    onClick={() => toggleAutoSync(bet.id, !!bet.autoSync)}
+                                                    className={cn(
+                                                      "p-1.5 rounded-md transition-all border",
+                                                      bet.autoSync ? "bg-accent/20 border-accent/30 text-accent" : "bg-bg border-border text-text-dim hover:border-accent/30 hover:text-accent"
+                                                    )}
+                                                    title={bet.autoSync ? "Desativar Atualização Automática" : "Ativar Atualização Automática"}
+                                                  >
+                                                    <RefreshCw className={cn("w-3.5 h-3.5", bet.autoSync && "animate-spin-slow")} />
+                                                  </button>
+                                                )}
+                                                
+                                                {/* Botão Sincronizar Placar (Zap) */}
+                                                {bet.status === 'pending' && (
+                                                  <button 
+                                                    onClick={() => syncOnlyScores([bet])}
+                                                    disabled={isSyncingScores || isSyncingResults}
+                                                    className={cn(
+                                                      "p-1.5 rounded-md transition-all hover:scale-110 border border-transparent",
+                                                      (syncingBetId === bet.id && isSyncingScores) ? "animate-spin text-accent" : "text-accent/60 hover:text-accent hover:border-accent/20"
+                                                    )}
+                                                    title="Placar Automático"
+                                                  >
+                                                    <Zap className="w-4 h-4" />
+                                                  </button>
+                                                )}
+                                                
+                                                {/* Botão Sincronizar Tudo (Refresh) */}
+                                                <button 
+                                                  onClick={() => syncResults([bet], true)}
+                                                  disabled={isSyncingResults || isSyncingScores}
+                                                  className={cn(
+                                                    "p-1.5 rounded-md transition-all hover:scale-110",
+                                                    (syncingBetId === bet.id && isSyncingResults) ? "animate-spin text-accent" : "text-text-dim hover:text-accent"
+                                                  )}
+                                                  title="Conferir Resultado Final"
+                                                >
+                                                  <RefreshCw className="w-4 h-4" />
+                                                </button>
+                                                
+                                                <div className="w-px h-4 bg-border/40 mx-1" />
+                                                
                                                 <button 
                                                   onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
                                                   className={cn(
@@ -3420,7 +3736,11 @@ export default function App() {
                                                           stake: bet.stake.toString(),
                                                           status: bet.status,
                                                           cashoutValue: bet.cashoutValue?.toString() || '',
-                                                          bookmaker: bet.bookmaker || 'Bet365'
+                                                          bookmaker: bet.bookmaker || 'Bet365',
+                                                          bankrollId: bet.bankrollId || activeBankrollId || '',
+                                                          isLive: bet.isLive,
+                                                          betId: bet.betId || '',
+                                                          league: bet.league || ''
                                                       });
                                                       setShowEditModal(true);
                                                   }}
@@ -3499,8 +3819,24 @@ export default function App() {
                                         {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
                                      </div>
                                      <h4 className="text-base font-black uppercase text-text-main leading-tight py-1">{bet.market}</h4>
-                                     <div className="space-y-1 pt-2">
-                                        <p className="text-[11px] font-bold text-text-dim uppercase opacity-60 leading-tight">{bet.event}</p>
+                                       <div className="space-y-1 pt-2">
+                                          <p className="text-[11px] font-bold text-text-dim uppercase opacity-60 leading-tight">
+                                            <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} mobile />
+                                          </p>
+                                          
+                                          {isMatchOngoing(bet.date) && bet.autoSync && (
+                                            <div className="pt-1">
+                                              <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
+                                                <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
+                                                AO VIVO
+                                              </span>
+                                            </div>
+                                          )}
+                                         
+                                         {/* Progress Bar Sincronia Automática Mobile */}
+                                          {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date)) && (
+                                            <SyncProgressBar className="w-full h-1 mt-3" />
+                                          )}
                                         {(bet.league || bet.betId) && (
                                           <div className="flex items-center gap-3">
                                             {bet.league && <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest">Liga: {bet.league}</span>}
@@ -3527,58 +3863,180 @@ export default function App() {
                                         </p>
                                         {bet.status !== 'pending' && bet.profit !== 0 && (
                                           <p className={cn(
-                                            "text-[8px] font-bold mt-1",
-                                            bet.profit > 0 ? "text-accent" : "text-loss"
-                                          )}>
-                                            {bet.profit > 0 ? '+' : ''}{formatCurrency(bet.profit)}
+                                             "text-[8px] font-bold mt-1",
+                                             bet.profit > 0 ? "text-accent" : "text-loss"
+                                           )}>
+                                             {bet.profit > 0 ? '+' : ''}{formatCurrency(bet.profit)}
                                           </p>
                                         )}
                                       </div>
                                    </div>
 
-                                   <div className="flex items-center gap-1 justify-between">
-                                      <div className="flex items-center gap-1">
-                                        <button 
-                                          onClick={() => {
-                                            if (bet.status === 'cashout') {
-                                              updateStatus(bet.id, 'pending');
-                                            } else {
-                                              setCashoutBetId(bet.id);
-                                              setCashoutAmount(bet.stake.toString());
-                                            }
-                                          }}
-                                          className={cn(
-                                            "p-2 rounded-lg border border-border bg-surface text-amber-500 transition-all",
-                                            bet.status === 'cashout' && "bg-amber-500/10 border-amber-500/20"
-                                          )}
-                                        >
-                                          <DollarSign className="w-4 h-4" />
-                                        </button>
-                                        <button onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')} className="p-2 bg-accent/5 text-accent rounded-lg border border-accent/10"><CheckCircle2 className="w-4 h-4" /></button>
-                                        <button onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><XCircle className="w-4 h-4" /></button>
-                                      </div>
-                                      <div className="flex items-center gap-1">
-                                         <button onClick={() => {
-                                            setEditingBetId(bet.id);
-                                            const isCustom = bet.bookmaker !== '' && !userBookmakers.includes(bet.bookmaker);
-                                            setIsManualBookmaker(isCustom);
-                                            setBetForm({
-                                                date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
-                                                sport: bet.sport,
-                                                event: bet.event,
-                                                market: bet.market,
-                                                selection: bet.selection,
-                                                odds: bet.odds.toString(),
-                                                stake: bet.stake.toString(),
-                                                status: bet.status,
-                                                cashoutValue: bet.cashoutValue?.toString() || '',
-                                                bookmaker: bet.bookmaker || 'Bet365'
-                                            });
-                                            setShowEditModal(true);
-                                        }} className="p-2 bg-surface rounded-lg border border-border"><Settings2 className="w-4 h-4" /></button>
-                                        <button onClick={() => deleteBet(bet.id)} className="p-2 bg-loss/5 text-loss rounded-lg border border-loss/10"><Trash2 className="w-4 h-4" /></button>
-                                      </div>
-                                   </div>
+                                       <div className="mt-8 space-y-3">
+                                          {/* requested discreet bar with 3 main functions */}
+                                          <div className="bg-bg/60 backdrop-blur-2xl rounded-xl md:rounded-2xl p-1 flex items-center justify-between border border-white/5 shadow-xl">
+                                             <div className="flex items-center gap-1 focus-within:ring-0 overflow-x-auto no-scrollbar">
+                                               {/* 1. Ativar Placar Automático */}
+                                               <button 
+                                                 onClick={(e) => { e.stopPropagation(); toggleAutoSync(bet.id, !!bet.autoSync); }}
+                                                 className={cn(
+                                                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95 group",
+                                                   bet.autoSync 
+                                                     ? "bg-accent border-accent text-bg shadow-[0_0_15px_-2px_rgba(34,197,94,0.5)]" 
+                                                     : "bg-surface/40 border-white/5 text-text-dim hover:text-accent hover:border-accent/30"
+                                                 )}
+                                                 title="Ativar Placar Automático"
+                                               >
+                                                 <div className="relative">
+                                                    <RefreshCw className={cn("w-4 h-4 transition-transform duration-500", bet.autoSync && "animate-spin-slow")} />
+                                                    {bet.autoSync && (
+                                                      <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-white rounded-full animate-pulse shadow-sm" />
+                                                    )}
+                                                 </div>
+                                               </button>
+
+                                               {/* 2. Atualizar Placar */}
+                                               <button 
+                                                 onClick={(e) => { e.stopPropagation(); syncOnlyScores([bet]); }}
+                                                 disabled={isSyncingScores || isSyncingResults}
+                                                 className={cn(
+                                                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                                                   (syncingBetId === bet.id && isSyncingScores)
+                                                     ? "bg-blue-500 border-blue-500 text-white animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.4)]" 
+                                                     : "bg-blue-500/10 border-blue-500/20 text-blue-400 shadow-sm hover:bg-blue-500/20 hover:scale-105"
+                                                 )}
+                                                 title="Atualizar Placar"
+                                               >
+                                                 {syncingBetId === bet.id && isSyncingScores ? (
+                                                   <Loader2 className="w-4 h-4 animate-spin" />
+                                                 ) : (
+                                                   <Zap className="w-4 h-4" />
+                                                 )}
+                                               </button>
+ 
+                                               {/* 3. Atualizar Status (Conferir Resultado) */}
+                                               <button 
+                                                 onClick={(e) => { e.stopPropagation(); syncResults([bet], true); }}
+                                                 disabled={isSyncingResults || isSyncingScores}
+                                                 className={cn(
+                                                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                                                   (syncingBetId === bet.id && isSyncingResults)
+                                                     ? "bg-purple-500 border-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]" 
+                                                     : "bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20 hover:scale-105"
+                                                 )}
+                                                 title="Atualizar status da aposta"
+                                               >
+                                                 <RefreshCw className={cn("w-4 h-4", (syncingBetId === bet.id && isSyncingResults) && "animate-spin")} />
+                                               </button>
+                                             </div>
+ 
+                                             <div className="flex items-center gap-0.5 border-l border-white/10 pl-1 shrink-0">
+                                                <button 
+                                                   onClick={(e) => {
+                                                       e.stopPropagation();
+                                                       setEditingBetId(bet.id);
+                                                       const isCustom = (bet.bookmaker || '') !== '' && !userBookmakers.includes(bet.bookmaker || '');
+                                                       setIsManualBookmaker(isCustom);
+                                                       setBetForm({
+                                                           date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
+                                                           sport: bet.sport,
+                                                           event: bet.event,
+                                                           market: bet.market,
+                                                           selection: bet.selection,
+                                                           odds: bet.odds.toString(),
+                                                           stake: bet.stake.toString(),
+                                                           status: bet.status,
+                                                           cashoutValue: bet.cashoutValue?.toString() || '',
+                                                           bookmaker: bet.bookmaker || 'Bet365',
+                                                           bankrollId: bet.bankrollId || activeBankrollId || '',
+                                                           isLive: !!bet.isLive,
+                                                           betId: bet.betId || '',
+                                                           league: bet.league || ''
+                                                       });
+                                                       setShowEditModal(true);
+                                                   }}
+                                                   className="p-1.5 md:p-2 text-text-dim hover:text-accent transition-colors"
+                                                   title="Editar"
+                                                >
+                                                   <Settings2 className="w-5 h-5" />
+                                                </button>
+                                                <button 
+                                                  onClick={(e) => { e.stopPropagation(); deleteBet(bet.id); }} 
+                                                  className="p-1.5 md:p-2 text-text-dim hover:text-loss transition-colors"
+                                                  title="Excluir"
+                                                >
+                                                  <Trash2 className="w-5 h-5" />
+                                                </button>
+                                             </div>
+                                          </div>
+
+                                          {/* Manual Status Selection */}
+                                          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1 px-1 mt-2">
+                                             <button 
+                                               onClick={(e) => { e.stopPropagation(); updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won'); }}
+                                               className={cn(
+                                                 "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95",
+                                                 bet.status === 'won' ? "bg-accent border-accent text-bg shadow-[0_0_10px_rgba(34,197,94,0.3)]" : "bg-white/5 border-white/5 text-accent/60 hover:text-accent hover:bg-accent/10"
+                                               )}
+                                             >
+                                                Green
+                                             </button>
+                                             <button 
+                                               onClick={(e) => { e.stopPropagation(); updateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win'); }}
+                                               className={cn(
+                                                 "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95",
+                                                 bet.status === 'half_win' ? "bg-accent/80 border-accent/80 text-bg shadow-[0_0_10px_rgba(34,197,94,0.2)]" : "bg-white/5 border-white/5 text-accent/40 hover:text-accent/60 hover:bg-accent/5"
+                                               )}
+                                             >
+                                                Meio Green
+                                             </button>
+                                             <button 
+                                               onClick={(e) => { e.stopPropagation(); updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost'); }}
+                                               className={cn(
+                                                 "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95",
+                                                 bet.status === 'lost' ? "bg-loss border-loss text-white shadow-[0_0_10px_rgba(239,68,68,0.3)]" : "bg-white/5 border-white/5 text-loss/60 hover:text-loss hover:bg-loss/10"
+                                               )}
+                                             >
+                                                Red
+                                             </button>
+                                             <button 
+                                               onClick={(e) => { e.stopPropagation(); updateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss'); }}
+                                               className={cn(
+                                                 "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95",
+                                                 bet.status === 'half_loss' ? "bg-loss/80 border-loss/80 text-white shadow-[0_0_10px_rgba(239,68,68,0.2)]" : "bg-white/5 border-white/5 text-loss/40 hover:text-loss/60 hover:bg-loss/5"
+                                               )}
+                                             >
+                                                Meio Red
+                                             </button>
+                                             <button 
+                                               onClick={(e) => { e.stopPropagation(); updateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void'); }}
+                                               className={cn(
+                                                 "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95",
+                                                 bet.status === 'void' ? "bg-text-dim border-text-dim text-bg shadow-[0_0_10px_rgba(156,163,175,0.3)]" : "bg-white/5 border-white/5 text-text-dim/60 hover:text-text-dim hover:bg-white/10"
+                                               )}
+                                             >
+                                                Reembolso
+                                             </button>
+                                             <button 
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  if (bet.status === 'cashout') {
+                                                    updateStatus(bet.id, 'pending');
+                                                  } else {
+                                                    setCashoutBetId(bet.id);
+                                                    setCashoutAmount(bet.stake.toString());
+                                                  }
+                                                }}
+                                                className={cn(
+                                                  "shrink-0 px-2.5 py-1 rounded-md border text-[7px] md:text-[8px] font-black uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1",
+                                                  bet.status === 'cashout' ? "bg-amber-500 border-amber-500 text-bg shadow-[0_0_10px_rgba(245,158,11,0.3)]" : "bg-white/5 border-white/5 text-amber-500/60 hover:text-amber-500 hover:bg-amber-500/10"
+                                                )}
+                                             >
+                                                <DollarSign className="w-3 h-3" />
+                                                 Cashout
+                                              </button>
+                                           </div>
+                                        </div>
                                 </motion.div>
                               ))}
                             </div>
