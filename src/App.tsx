@@ -97,6 +97,41 @@ import { cn, formatCurrency, calculateProfit, safeNewDate } from './lib/utils';
 import { Bet, Bankroll, Stats, Transaction } from './types';
 import { extractBetFromImage, checkBetResult, getAIInsights, AIInsight, openApiKeySelector } from './services/geminiService';
 
+// Animation Presets for Fluidity
+const TRANSITIONS = {
+  spring: { type: "spring", stiffness: 300, damping: 30 },
+  smooth: { duration: 0.3, ease: [0.23, 1, 0.32, 1] },
+  bounce: { type: "spring", stiffness: 400, damping: 17 }
+};
+
+const PAGE_VARIANTS = {
+  initial: { opacity: 0, x: 10, filter: "blur(4px)" },
+  animate: { opacity: 1, x: 0, filter: "blur(0px)" },
+  exit: { opacity: 0, x: -10, filter: "blur(4px)" }
+};
+
+const MODAL_VARIANTS = {
+  overlay: { opacity: 0 },
+  overlayAnimate: { opacity: 1 },
+  content: { scale: 0.95, opacity: 0, y: 10 },
+  contentAnimate: { scale: 1, opacity: 1, y: 0 },
+  contentExit: { scale: 0.95, opacity: 0, y: 10 }
+};
+
+const STAGGER_CONTAINER = {
+  animate: {
+    transition: {
+      staggerChildren: 0.05
+    }
+  }
+};
+
+const STAGGER_ITEM = {
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, scale: 0.95 }
+};
+
 const BOOKMAKER_CONFIGS: Record<string, { color: string, bg: string, border: string, glow: string }> = {
   'Bet365': { color: 'text-[#00ff95]', bg: 'bg-[#00ff95]/10', border: 'border-[#00ff95]/40', glow: 'shadow-[0_0_15px_rgba(0,255,149,0.2)]' },
   'SuperBet': { color: 'text-red-500', bg: 'bg-red-500/10', border: 'border-red-500/40', glow: 'shadow-[0_0_15px_rgba(239,68,68,0.2)]' },
@@ -303,7 +338,8 @@ export default function App() {
 
     const startIntervals = () => {
       mainSyncInterval = setInterval(() => {
-        if (user) {
+        // Só sincroniza automaticamente se o usuário estiver com a aba ativa
+        if (user && document.visibilityState === 'visible') {
           syncOnlyScores();
         }
       }, 600000); // 10 minutos
@@ -329,6 +365,49 @@ export default function App() {
     setSuccessToast({ message, type });
     setTimeout(() => setSuccessToast(null), 3000);
   };
+
+  // Inactivity Logout Effect (1 hour)
+  useEffect(() => {
+    if (!user) return;
+
+    const INACTIVITY_TIMEOUT = 3600000; // 1 hora em ms
+    let timeoutId: NodeJS.Timeout;
+
+    const handleLogout = () => {
+      signOut().then(() => {
+        showToast("Sessão encerrada por inatividade.", "info");
+      }).catch(err => console.error("Erro ao deslogar por inatividade:", err));
+    };
+
+    const resetTimer = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(handleLogout, INACTIVITY_TIMEOUT);
+    };
+
+    // Events to track user activity
+    const events = ['mousedown', 'mousemove', 'keypress', 'scroll', 'touchstart'];
+    
+    const setupListeners = () => {
+      events.forEach(event => {
+        window.addEventListener(event, resetTimer);
+      });
+    };
+
+    const cleanupListeners = () => {
+      events.forEach(event => {
+        window.removeEventListener(event, resetTimer);
+      });
+    };
+
+    // Initialize listeners and timer
+    setupListeners();
+    resetTimer();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      cleanupListeners();
+    };
+  }, [user]);
 
   // Auth Effect
   useEffect(() => {
@@ -1584,13 +1663,18 @@ export default function App() {
     
     // Filtra apenas apostas pendentes e não deletadas
     // Se for manual (specificBets), ignora o filtro autoSync. Se for automático, exige autoSync: true.
+    const isAutomatic = !specificBets;
     const betsToSync = (specificBets || bets.filter(b => b.status === 'pending' && !b.deleted && b.autoSync))
       .filter(b => {
-        const matchStart = safeNewDate(b.date).getTime();
-        const diff = now.getTime() - matchStart;
-        // Começa a sincronizar se estiver no horário (ou até 2 min antes) 
-        // e para após 105 minutos do início
-        return diff >= -120000 && diff < MATCH_TIMEOUT_MS;
+        if (isAutomatic) {
+          if (!b.autoSync) return false;
+          const matchStart = safeNewDate(b.date).getTime();
+          const diff = now.getTime() - matchStart;
+          // Começa a sincronizar se estiver no horário (ou até 2 min antes) 
+          // e para após 105 minutos do início
+          return diff >= -120000 && diff < MATCH_TIMEOUT_MS;
+        }
+        return true; // Se for manual (specificBets), ignora filtros de tempo
       })
       .slice(0, 5);
 
@@ -2462,17 +2546,17 @@ export default function App() {
         </header>
 
         <div className="p-4 md:p-10 max-w-7xl mx-auto min-h-[calc(100vh-6rem)]">
-          {activeTab === 'dashboard' && (
-            <motion.div 
-              key={`dashboard-${activeBankrollId}`}
-              initial={{ opacity: 0, x: -30, scale: 0.98 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              transition={{ 
-                duration: 0.5, 
-                ease: [0.23, 1, 0.32, 1] 
-              }}
-              className="space-y-8"
-            >
+          <AnimatePresence mode="wait">
+            {activeTab === 'dashboard' && (
+              <motion.div 
+                key={`dashboard-${activeBankrollId}`}
+                variants={PAGE_VARIANTS}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={TRANSITIONS.smooth}
+                className="space-y-8"
+              >
               <AnimatePresence>
                 {showSyncBanner && (
                   <motion.div
@@ -2537,14 +2621,19 @@ export default function App() {
               </div>
 
               {/* Quick Summary Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-4">
-                <StatsCard title="Total Entradas" value={`${stats.totalBets}`} icon={<History />} />
-                <StatsCard title="Lucro Total" value={formatCurrency(stats.totalProfit)} trend={stats.totalProfit >= 0 ? 'up' : 'down'} icon={<BarChart3 />} />
-                <StatsCard title="Lucro s/ Banca" value={`${stats.profitPercentage.toFixed(1)}%`} trend={stats.profitPercentage >= 0 ? 'up' : 'down'} icon={<TrendingUp />} />
-                <StatsCard title="Taxa de Acerto" value={`${stats.winRate.toFixed(1)}%`} icon={<History />} />
-                <StatsCard title="ROI" value={`${stats.roi.toFixed(1)}%`} icon={<TrendingUp />} />
-                <StatsCard title="Lucro em Unidades" value={`${stats.unitsWon.toFixed(1)}u`} icon={<Target />} />
-              </div>
+              <motion.div 
+                variants={STAGGER_CONTAINER}
+                initial="initial"
+                animate="animate"
+                className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 md:gap-4"
+              >
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="Total Entradas" value={`${stats.totalBets}`} icon={<History />} /></motion.div>
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="Lucro Total" value={formatCurrency(stats.totalProfit)} trend={stats.totalProfit >= 0 ? 'up' : 'down'} icon={<BarChart3 />} /></motion.div>
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="Lucro s/ Banca" value={`${stats.profitPercentage.toFixed(1)}%`} trend={stats.profitPercentage >= 0 ? 'up' : 'down'} icon={<TrendingUp />} /></motion.div>
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="Taxa de Acerto" value={`${stats.winRate.toFixed(1)}%`} icon={<History />} /></motion.div>
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="ROI" value={`${stats.roi.toFixed(1)}%`} icon={<TrendingUp />} /></motion.div>
+                <motion.div variants={STAGGER_ITEM}><StatsCard title="Lucro em Unidades" value={`${stats.unitsWon.toFixed(1)}u`} icon={<Target />} /></motion.div>
+              </motion.div>
 
               {/* Bookmaker Exposure (Mobile friendly) */}
               {bookmakerExposure.length > 0 && (
@@ -3111,17 +3200,16 @@ export default function App() {
             </div>
           )}
 
-          {activeTab === 'bets' && (
-            <motion.div 
-              key={`history-${activeBankrollId}`}
-              initial={{ opacity: 0, x: 30, scale: 0.98 }}
-              animate={{ opacity: 1, x: 0, scale: 1 }}
-              transition={{ 
-                duration: 0.5, 
-                ease: [0.23, 1, 0.32, 1] 
-              }}
-              className="space-y-6"
-            >
+            {activeTab === 'bets' && (
+              <motion.div 
+                key={`history-${activeBankrollId}`}
+                variants={PAGE_VARIANTS}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                transition={TRANSITIONS.smooth}
+                className="space-y-6"
+              >
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                 <div className="relative w-full lg:max-w-sm">
                   <Filter className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-text-dim" />
@@ -3341,7 +3429,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="space-y-12">
+              <motion.div 
+                variants={STAGGER_CONTAINER}
+                initial="initial"
+                animate="animate"
+                className="space-y-12"
+              >
                 {isSyncingResults && (
                   <motion.div 
                     initial={{ opacity: 0, height: 0 }}
@@ -3377,7 +3470,7 @@ export default function App() {
                   const isCollapsed = collapsedDates.has(date);
                   
                   return (
-                    <div key={date} className="space-y-4">
+                    <motion.div variants={STAGGER_ITEM} key={date} className="space-y-4">
                       <div 
                         onClick={() => toggleDateCollapse(date)}
                         className="flex flex-col md:flex-row md:items-center gap-4 px-2 group/header cursor-pointer select-none"
@@ -4043,26 +4136,30 @@ export default function App() {
                           </motion.div>
                         )}
                       </AnimatePresence>
-                    </div>
+                    </motion.div>
                   );
                 })}
 
                 {groupedHistory.length === 0 && (
-                  <div className="glass-card py-20 text-center text-zinc-500 border border-dashed border-border/50">
+                  <motion.div variants={STAGGER_ITEM} className="glass-card py-20 text-center text-zinc-500 border border-dashed border-border/50">
                     <div className="flex flex-col items-center gap-2">
                         <History className="w-12 h-12 opacity-10" />
                         <p className="text-[10px] font-black uppercase tracking-widest opacity-40">Nenhuma aposta encontrada com estes filtros.</p>
                     </div>
-                  </div>
+                  </motion.div>
                 )}
-              </div>
+              </motion.div>
             </motion.div>
           )}
 
           {activeTab === 'transfers' && (
             <motion.div 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
+              key={`transfers-${activeBankrollId}`}
+              variants={PAGE_VARIANTS}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={TRANSITIONS.smooth}
               className="space-y-8"
             >
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -5003,6 +5100,7 @@ export default function App() {
                 </div>
             </div>
           )}
+          </AnimatePresence>
         </div>
       </main>
 
@@ -5577,9 +5675,10 @@ export default function App() {
         {showTransactionEditModal && editingTransactionId && (
            <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
               <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
+                variants={MODAL_VARIANTS}
+                initial="overlay"
+                animate="overlayAnimate"
+                exit="overlay"
                 onClick={() => {
                   setShowTransactionEditModal(false);
                   setEditingTransactionId(null);
@@ -5587,9 +5686,11 @@ export default function App() {
                 className="absolute inset-0 bg-bg/95 backdrop-blur-xl"
               />
               <motion.div
-                initial={{ opacity: 0, scale: 0.9, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                variants={MODAL_VARIANTS}
+                initial="content"
+                animate="contentAnimate"
+                exit="contentExit"
+                transition={TRANSITIONS.spring}
                 className="w-full max-w-md glass-card p-0 overflow-hidden relative border-border bg-surface/50 shadow-2xl"
               >
                  <div className="p-6 border-b border-border flex items-center justify-between bg-bg/40">
@@ -5737,16 +5838,19 @@ export default function App() {
         {adjustingBookmaker && (
            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
               <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
+                variants={MODAL_VARIANTS}
+                initial="overlay"
+                animate="overlayAnimate"
+                exit="overlay"
                 onClick={() => setAdjustingBookmaker(null)}
                 className="absolute inset-0 bg-bg/80 backdrop-blur-sm"
               />
               <motion.div 
-                initial={{ scale: 0.9, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.9, opacity: 0 }}
+                variants={MODAL_VARIANTS}
+                initial="content"
+                animate="contentAnimate"
+                exit="contentExit"
+                transition={TRANSITIONS.spring}
                 className="relative bg-surface border border-border p-8 rounded-2xl w-full max-w-md shadow-2xl z-10"
               >
                  <h3 className="text-xl font-black uppercase tracking-tighter mb-2">Ajustar Saldo Real</h3>
@@ -5794,9 +5898,10 @@ export default function App() {
         {showEditModal && editingBetId && (
           <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
              <motion.div 
-               initial={{ opacity: 0 }}
-               animate={{ opacity: 1 }}
-               exit={{ opacity: 0 }}
+               variants={MODAL_VARIANTS}
+               initial="overlay"
+               animate="overlayAnimate"
+               exit="overlay"
                onClick={() => {
                  setShowEditModal(false);
                  setEditingBetId(null);
@@ -5804,9 +5909,11 @@ export default function App() {
                className="absolute inset-0 bg-bg/95 backdrop-blur-xl"
              />
              <motion.div
-               initial={{ opacity: 0, scale: 0.9, y: 20 }}
-               animate={{ opacity: 1, scale: 1, y: 0 }}
-               exit={{ opacity: 0, scale: 0.9, y: 20 }}
+               variants={MODAL_VARIANTS}
+               initial="content"
+               animate="contentAnimate"
+               exit="contentExit"
+               transition={TRANSITIONS.spring}
                className="w-full max-w-2xl glass-card p-0 overflow-hidden relative border-border bg-surface/50 shadow-[0_40px_80px_-15px_rgba(0,0,0,0.6)]"
              >
                 <div className="p-6 border-b border-border flex items-center justify-between bg-bg/40">
@@ -6021,17 +6128,19 @@ export default function App() {
         {isBankrollMenuOpen && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
             <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
+              variants={MODAL_VARIANTS}
+              initial="overlay"
+              animate="overlayAnimate"
+              exit="overlay"
               onClick={() => setIsBankrollMenuOpen(false)}
               className="absolute inset-0 bg-bg/90 backdrop-blur-md"
             />
             <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 30 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9, y: 30 }}
-              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+              variants={MODAL_VARIANTS}
+              initial="content"
+              animate="contentAnimate"
+              exit="contentExit"
+              transition={TRANSITIONS.bounce}
               className="stat-card p-0 w-full max-w-sm border-border bg-surface shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] relative overflow-hidden"
             >
               <div className="p-6 border-b border-border bg-bg/20 backdrop-blur-xl">
@@ -6154,7 +6263,11 @@ export default function App() {
 
 function StatsCard({ title, value, trend, icon }: { title: string, value: string, trend?: 'up' | 'down', icon: React.ReactNode }) {
   return (
-    <div className="stat-card">
+    <motion.div 
+      whileHover={{ y: -5, scale: 1.02 }}
+      transition={TRANSITIONS.spring}
+      className="stat-card"
+    >
       <p className="text-text-dim text-[11px] font-black uppercase tracking-widest mb-2">{title}</p>
       <div className="flex items-end justify-between">
         <h4 className={cn(
@@ -6162,7 +6275,7 @@ function StatsCard({ title, value, trend, icon }: { title: string, value: string
             trend === 'up' ? "text-accent" : trend === 'down' ? "text-loss" : "text-text-main"
         )}>{value}</h4>
       </div>
-    </div>
+    </motion.div>
   )
 }
 
