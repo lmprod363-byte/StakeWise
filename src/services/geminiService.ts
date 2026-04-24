@@ -100,67 +100,100 @@ export interface AIInsight {
   type: 'positive' | 'negative' | 'neutral';
 }
 
+const DEFAULT_MODEL = "gemini-2.0-flash";
+let lastQuotaErrorTimestamp = 0;
+const COOLDOWN_MS = 60000; // 1 minuto de pausa se bater no limite
+
+function checkCooldown() {
+  const now = Date.now();
+  if (now - lastQuotaErrorTimestamp < COOLDOWN_MS) {
+    const remaining = Math.ceil((COOLDOWN_MS - (now - lastQuotaErrorTimestamp)) / 1000);
+    throw new Error(`Limite de cota atingido. Aguarde ${remaining}s para nova tentativa.`);
+  }
+}
+
 export async function checkBetResult(
     event: string, 
     market: string, 
     selection: string, 
     date: string
 ): Promise<BetOutcome> {
-  const model = "gemini-3-flash-preview";
+  const maxRetries = 2;
   
-  const prompt = `Consulte os resultados reais na internet para determinar o status e o placar ATUAL desta aposta.
-  Evento: ${event}
-  Data prevista: ${date}
-  Mercado: ${market}
-  Seleção: ${selection}
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      checkCooldown();
+      const model = DEFAULT_MODEL;
+      
+      const prompt = `Consulte os resultados reais na internet para determinar o status e o placar ATUAL desta aposta.
+      Evento: ${event}
+      Data prevista: ${date}
+      Mercado: ${market}
+      Seleção: ${selection}
 
-  Instruções:
-  1. Use a pesquisa do Google para encontrar o placar AO VIVO ou FINAL e o tempo de jogo ATUAL.
-  2. Se a partida estiver em andamento, extraia o minuto e o tempo (ex: 45' 1T, 80' 2T).
-  3. Preencha o campo 'matchTime' no formato: "[Minutos] ([Tempo])". Exemplo: "62' (2T)", "HT (Intervalo)", "FT (Encerrado)".
-  4. Determine se a aposta foi 'won' (vencida), 'lost' (perdida), 'void' (anulada) ou continua 'pending'.
-  5. Se o evento ainda não terminou, retorne 'status': 'pending', mas OBRIGATORIAMENTE preencha os campos 'score' (placar atual) e 'matchTime'.
-  6. Para o campo 'score', use o formato "X-Y" (se aplicável ao esporte).
-  7. Seja extremamente rigoroso.
+      Instruções:
+      1. Use a pesquisa do Google para encontrar o placar AO VIVO ou FINAL e o tempo de jogo ATUAL.
+      2. Se a partida estiver em andamento, extraia o minuto e o tempo (ex: 45' 1T, 80' 2T).
+      3. Preencha o campo 'matchTime' no formato: "[Minutos] ([Tempo])". Exemplo: "62' (2T)", "HT (Intervalo)", "FT (Encerrado)".
+      4. Determine se a aposta foi 'won' (vencida), 'lost' (perdida), 'void' (anulada) ou continua 'pending'.
+      5. Se o evento ainda não terminou, retorne 'status': 'pending', mas OBRIGATORIAMENTE preencha os campos 'score' (placar atual) e 'matchTime'.
+      6. Para o campo 'score', use o formato "X-Y" (se aplicável ao esporte).
+      7. Seja extremamente rigoroso.
 
-  Responda obrigatoriamente em JSON.`;
+      Responda obrigatoriamente em JSON.`;
 
-  const response = await getAIInstance().models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      tools: [{ googleSearch: {} }],
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          status: { 
-            type: Type.STRING, 
-            enum: ['won', 'lost', 'void', 'pending'],
+      const response = await getAIInstance().models.generateContent({
+        model,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              status: { 
+                type: Type.STRING, 
+                enum: ['won', 'lost', 'void', 'pending'],
+              },
+              reason: { 
+                type: Type.STRING, 
+              },
+              score: {
+                type: Type.STRING,
+                description: "Placar atual ou final (ex: '2-1')"
+              },
+              matchTime: {
+                type: Type.STRING,
+                description: "Minuto e período do jogo (ex: '45 (1T)', 'FT')"
+              }
+            },
+            required: ["status", "reason"],
           },
-          reason: { 
-            type: Type.STRING, 
-          },
-          score: {
-            type: Type.STRING,
-            description: "Placar atual ou final (ex: '2-1')"
-          },
-          matchTime: {
-            type: Type.STRING,
-            description: "Minuto e período do jogo (ex: '45 (1T)', 'FT')"
-          }
         },
-        required: ["status", "reason"],
-      },
-    },
-  });
+      });
 
-  try {
-    return JSON.parse(response.text || "{}") as BetOutcome;
-  } catch (error) {
-    console.error("Erro ao verificar resultado com Gemini:", error);
-    return { status: 'pending', reason: "Erro ao processar resposta da IA" };
+      return JSON.parse(response.text || "{}") as BetOutcome;
+    } catch (error: any) {
+      const errorMsg = error.message || "";
+      const isQuota = /429|quota|limite|limit/i.test(errorMsg);
+      
+      if (isQuota) {
+        lastQuotaErrorTimestamp = Date.now();
+      }
+
+      if (attempt === maxRetries || errorMsg.includes("Aguarde")) {
+        console.error("Erro final ao verificar resultado:", errorMsg);
+        return { 
+          status: 'pending', 
+          reason: isQuota ? (errorMsg.includes("Aguarde") ? errorMsg : "Limite de cota atingido") : "Erro técnico na IA" 
+        };
+      }
+
+      const wait = isQuota ? 5000 * (attempt + 1) : 1000;
+      await new Promise(r => setTimeout(r, wait));
+    }
   }
+  return { status: 'pending', reason: "Falha após retentativas" };
 }
 
 export async function extractBetFromImage(base64Image: string, mimeType: string = "image/png"): Promise<ExtractedBet> {
@@ -169,7 +202,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
     throw new Error("API Key v1.4.1 não detectada. Por favor, utilize a 'Entrada Manual' na aba Configurações.");
   }
 
-  const model = "gemini-3-flash-preview";
+  const model = DEFAULT_MODEL;
   
   const currentYear = new Date().getFullYear();
   const todayISO = new Date().toISOString().split('T')[0];
@@ -226,11 +259,12 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   
   Responda obrigatoriamente no formato JSON estruturado seguindo o schema.`;
 
-  const maxRetries = 3;
+  const maxRetries = 2;
   let lastError = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      checkCooldown();
       const response = await getAIInstance().models.generateContent({
         model,
         contents: {
@@ -277,14 +311,23 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message || "";
-      const isQuotaError = errorMsg.includes("429") || errorMsg.includes("quota") || errorMsg.includes("limit");
+      const isQuotaError = /429|quota|limite|limit/i.test(errorMsg);
+      
+      if (isQuotaError) {
+        lastQuotaErrorTimestamp = Date.now();
+      }
+
       const isInternalError = errorMsg.includes("500") || errorMsg.includes("Internal error");
       const isAuthError = errorMsg.includes("403") || errorMsg.includes("API_KEY") || errorMsg.includes("PERMISSION_DENIED") || errorMsg.includes("400");
       
       console.warn(`Tentativa ${attempt + 1}/${maxRetries + 1} de extração falhou:`, errorMsg);
       
+      if (errorMsg.includes("Aguarde")) {
+        throw error;
+      }
+
       if (isQuotaError && attempt === maxRetries) {
-        throw new Error("Limite de requisições excedido. Se você usa uma chave gratuita, aguarde 60 segundos antes de tentar novamente ou verifique se sua chave tem créditos.");
+        throw new Error("LIMITE DE REQUISIÇÕES EXCEDIDO. SE VOCÊ USA UMA CHAVE GRATUITA, AGUARDE 60 SEGUNDOS ANTES DE TENTAR NOVAMENTE OU VERIFIQUE SE SUA CHAVE TEM CRÉDITOS.");
       }
 
       if (isAuthError && attempt === maxRetries) {
@@ -292,18 +335,18 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
       }
 
       if (attempt < maxRetries) {
-        const waitTime = (isQuotaError || isInternalError) ? 3000 * (attempt + 1) : 1000;
+        const waitTime = (isQuotaError || isInternalError) ? 5000 * (attempt + 1) : 1000;
         await new Promise(resolve => setTimeout(resolve, waitTime));
       }
     }
   }
 
-  console.error("Erro ao processar imagem após retentativas:", lastError);
   throw new Error(`Servidor de IA instável (${lastError?.message?.substring(0, 30)}).`);
 }
 
 export async function getAIInsights(bets: any[]): Promise<AIInsight[]> {
-  const model = "gemini-3-flash-preview"; 
+  const maxRetries = 1;
+  const model = DEFAULT_MODEL; 
   
   const betsSummary = bets.map(b => ({
     sport: b.sport,
@@ -328,37 +371,49 @@ export async function getAIInsights(bets: any[]): Promise<AIInsight[]> {
   - Responda em Português.
   - Formato JSON obrigatório.`;
 
-  const response = await getAIInstance().models.generateContent({
-    model,
-    contents: [{ parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          insights: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                content: { type: Type.STRING },
-                type: { type: Type.STRING, enum: ['positive', 'negative', 'neutral'] }
-              },
-              required: ["title", "content", "type"]
-            }
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      checkCooldown();
+      const response = await getAIInstance().models.generateContent({
+        model,
+        contents: [{ parts: [{ text: prompt }] }],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              insights: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    content: { type: Type.STRING },
+                    type: { type: Type.STRING, enum: ['positive', 'negative', 'neutral'] }
+                  },
+                  required: ["title", "content", "type"]
+                }
+              }
+            },
+            required: ["insights"]
           }
-        },
-        required: ["insights"]
-      }
-    }
-  });
+        }
+      });
 
-  try {
-    const result = JSON.parse(response.text || '{"insights": []}');
-    return result.insights;
-  } catch (error) {
-    console.error("Erro ao gerar insights:", error);
-    return [];
+      const result = JSON.parse(response.text || '{"insights": []}');
+      return result.insights;
+    } catch (error: any) {
+      const errorMsg = error.message || "";
+      const isQuota = /429|quota|limite|limit/i.test(errorMsg);
+      
+      if (isQuota) lastQuotaErrorTimestamp = Date.now();
+      
+      if (attempt === maxRetries || errorMsg.includes("Aguarde")) {
+        console.error("Erro ao gerar insights:", errorMsg);
+        return [];
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
   }
+  return [];
 }

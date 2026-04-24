@@ -332,25 +332,29 @@ export default function App() {
   }, [bets.length, activeTab]);
 
   useEffect(() => {
-    // Sistema Único Automático: Atualização de Placares (Frequente)
-    // O status da aposta (Ganha/Perdida) só é atualizado manualmente via botão
     let mainSyncInterval: NodeJS.Timeout;
 
     const startIntervals = () => {
-      mainSyncInterval = setInterval(() => {
-        // Só sincroniza automaticamente se o usuário estiver com a aba ativa
+      // Inicia com um delay para não bater de frente com o carregamento inicial
+      setTimeout(() => {
         if (user && document.visibilityState === 'visible') {
           syncOnlyScores();
         }
-      }, 600000); // 10 minutos
+      }, 5000);
+
+      mainSyncInterval = setInterval(() => {
+        if (user && document.visibilityState === 'visible') {
+          syncOnlyScores();
+        }
+      }, 900000); // 15 minutos
     };
 
-    startIntervals();
+    if (user) {
+      startIntervals();
+    }
 
-    return () => {
-      clearInterval(mainSyncInterval);
-    };
-  }, [bets.length, user]);
+    return () => clearInterval(mainSyncInterval);
+  }, [user?.uid]); // Estabilizado
 
   const toggleDateCollapse = (date: string) => {
     setCollapsedDates(prev => {
@@ -1377,14 +1381,22 @@ export default function App() {
         completed++;
         setManualSyncProgress((completed / betsToSync.length) * 100);
         setSyncingBetId(null);
+        
+        // Adiciona um pequeno delay entre requisições para evitar 429
+        if (betsToSync.length > 1) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
       }
       setSelectedBetIds(new Set()); // Limpa seleção após sincronizar
       if (!silent) showToast("Sincronização concluída!", "success");
       else showToast("Resultados atualizados!", "success");
       setShowSyncBanner(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Erro na sincronização:", error);
-      if (!silent) showToast("Erro ao sincronizar. Verifique sua conexão.", "info");
+      if (!silent) {
+        const errorMsg = error.message || "Verifique sua conexão";
+        showToast(`Erro na sincronização: ${errorMsg}`, "info");
+      }
     } finally {
       setIsSyncingResults(false);
       setSyncingBetId(null);
@@ -1664,10 +1676,10 @@ export default function App() {
     // Filtra apenas apostas pendentes e não deletadas
     // Se for manual (specificBets), ignora o filtro autoSync. Se for automático, exige autoSync: true.
     const isAutomatic = !specificBets;
-    const betsToSync = (specificBets || bets.filter(b => b.status === 'pending' && !b.deleted && b.autoSync))
+    const betsToSync = (specificBets || bets.filter(b => b.status === 'pending' && !b.deleted && b.autoSync === true))
       .filter(b => {
         if (isAutomatic) {
-          if (!b.autoSync) return false;
+          if (b.autoSync !== true) return false;
           const matchStart = safeNewDate(b.date).getTime();
           const diff = now.getTime() - matchStart;
           // Começa a sincronizar se estiver no horário (ou até 2 min antes) 
@@ -1679,16 +1691,21 @@ export default function App() {
       .slice(0, 5);
 
     if (betsToSync.length === 0) return;
+    
+    // Apenas os 3 primeiros para evitar Rate Limit na sincronização passiva
+    const limitedBets = betsToSync.slice(0, 3);
 
     setIsSyncingScores(true);
     try {
-      for (const bet of betsToSync) {
+      for (const bet of limitedBets) {
         setSyncingBetId(bet.id);
         const result = await checkBetResult(bet.event, bet.market, bet.selection, bet.date);
         if (result.score) {
           await updateBetScore(bet.id, result.score, result.matchTime);
         }
         setSyncingBetId(null);
+        // Delay extra na sincronização automática
+        await new Promise(r => setTimeout(r, 3000));
       }
     } catch (error) {
       console.error("Erro na sincronização de placares:", error);
@@ -3641,7 +3658,7 @@ export default function App() {
                                               </div>
                                               <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
                                                 {format(safeNewDate(bet.date), "HH:mm")} 
-                                                {isMatchOngoing(bet.date) && bet.autoSync && (
+                                                {isMatchOngoing(bet.date) && bet.autoSync === true && (
                                                   <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
                                                     <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
                                                     AO VIVO
@@ -3664,7 +3681,7 @@ export default function App() {
                                                 )}
 
                                                 {/* Progress Bar Sincronia Automática */}
-                                                {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date)) && (
+                                                {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date) && bet.autoSync === true) && (
                                                   <SyncProgressBar className="w-full max-w-[120px] h-0.5 mt-2" />
                                                 )}
                                               </div>
@@ -3917,7 +3934,7 @@ export default function App() {
                                             <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} mobile />
                                           </p>
                                           
-                                          {isMatchOngoing(bet.date) && bet.autoSync && (
+                                          {isMatchOngoing(bet.date) && bet.autoSync === true && (
                                             <div className="pt-1">
                                               <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
                                                 <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
@@ -3927,7 +3944,7 @@ export default function App() {
                                           )}
                                          
                                          {/* Progress Bar Sincronia Automática Mobile */}
-                                          {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date)) && (
+                                          {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date) && bet.autoSync === true) && (
                                             <SyncProgressBar className="w-full h-1 mt-3" />
                                           )}
                                         {(bet.league || bet.betId) && (
