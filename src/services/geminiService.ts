@@ -100,7 +100,7 @@ export interface AIInsight {
   type: 'positive' | 'negative' | 'neutral';
 }
 
-const DEFAULT_MODEL = "gemini-2.0-flash";
+const DEFAULT_MODEL = "gemini-3-flash-preview";
 let lastQuotaErrorTimestamp = 0;
 const COOLDOWN_MS = 60000; // 1 minuto de pausa se bater no limite
 
@@ -120,9 +120,9 @@ export async function checkBetResult(
 ): Promise<BetOutcome> {
   const maxRetries = 2;
   
+  checkCooldown();
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      checkCooldown();
       const model = DEFAULT_MODEL;
       
       const prompt = `Consulte os resultados reais na internet para determinar o status e o placar ATUAL desta aposta.
@@ -168,7 +168,7 @@ export async function checkBetResult(
       }
     } catch (error: any) {
       const errorMsg = error.message || "";
-      const isQuota = /429|quota|limite|limit/i.test(errorMsg);
+      const isQuota = /429|quota|limite|limit/i.test(errorMsg) && !errorMsg.includes("Aguarde");
       
       if (isQuota) {
         lastQuotaErrorTimestamp = Date.now();
@@ -199,7 +199,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   
   const currentYear = new Date().getFullYear();
   const todayISO = new Date().toISOString().split('T')[0];
-  const prompt = `Analise este print de aposta esportiva e extraia minuciosamente todos os dados disponíveis. 
+  const prompt = `Analise este print de aposta esportiva com ATENÇÃO REDOBRADA e extraia minuciosamente todos os dados disponíveis. Não seja preguiçoso na leitura: verifique cada detalhe, ícone e texto pequeno.
   
   DADOS REQUERIDOS:
   1. Esporte: (ex: Futebol, Basquete)
@@ -209,13 +209,13 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
      Exemplo: Se o mercado é 'Ambas Marcam' e a seleção é 'Sim', retorne 'Ambas Marcam: Sim'.
      Exemplo: Se é 'Resultado Final' e a seleção é 'Real Madrid', retorne 'Vencedor: Real Madrid'.
      IMPORTANTE: Coloque todos os detalhes técnicos da aposta (linhas de handicap, over/under, etc) neste campo 'market'.
-  5. Odds: O valor da cotação
+  5. Odds: O valor da cotação (leia com precisão, cuidado com 1.80 vs 1.00)
   6. Stake: O valor apostado (em números)
   7. ID da Aposta: Referência ou ID da transação
   8. Casa de Aposta: Identifique a marca (ex: Bet365, Betano)
   
-  STATUS E RESULTADO (LEITURA REFINADA E EXTREMA PRECISÃO):
-  Verifique minuciosamente se a aposta já foi FINALIZADA/RESOLVIDA. Não ignore nenhum detalhe visual.
+  STATUS E RESULTADO (LEITURA EXTREMAMENTE RIGOROSA):
+  Verifique minuciosamente se a aposta já foi FINALIZADA/RESOLVIDA. Compare as cores, ícones e termos.
   
   PROCEDIMENTO DE ANALISE:
   1. CORES: 
@@ -236,8 +236,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
      - 'CASHOUT', 'ENCERRADA', 'PAGO ANTECIPADO': Status 'cashout'.
      - 'PENDING', 'EM ABERTO', 'ATIVA', 'LIVE', 'AO VIVO', 'AGUARDANDO': Status 'pending'.
   
-  Categorize o 'status' RIGOROSAMENTE como um destes:
-  - 'won', 'lost', 'void', 'half_win', 'half_loss', 'cashout', 'pending'.
+  Categorize o 'status' RIGOROSAMENTE. Se houver qualquer indicação de perda (cor vermelha ou texto 'perdida'), marque como 'lost'. 
   
   DATA E HORÁRIO DO EVENTO:
   1. Identifique a DATA e o HORÁRIO exatos do evento no print. 
@@ -247,17 +246,18 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
   5. Identifique se é uma "Entrada Ao Vivo" (isLive). Se o print mostrar o evento em andamento, o tempo de jogo, ou se não houver um horário futuro claro, defina isLive como true.
   
   REGRAS DE EXTRAÇÃO:
-  - Seja extremamente fiel ao que está escrito.
-  - Se não houver clareza sobre o resultado, prefira 'pending' para não induzir o usuário ao erro.
+  - Seja extremamente fiel ao que está escrito. Extraia até o último centavo da Stake.
+  - Se houver texto ilegível, tente deduzir pelo contexto do esporte/mercado.
+  - Não pule nenhum campo obrigatório.
   
   Responda obrigatoriamente no formato JSON estruturado seguindo o schema.`;
 
   const maxRetries = 2;
   let lastError = null;
 
+  checkCooldown();
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      checkCooldown();
       const response = await getAIInstance().models.generateContent({
         model,
         contents: {
@@ -272,6 +272,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
           ],
         },
         config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH },
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
@@ -304,7 +305,7 @@ export async function extractBetFromImage(base64Image: string, mimeType: string 
     } catch (error: any) {
       lastError = error;
       const errorMsg = error.message || "";
-      const isQuotaError = /429|quota|limite|limit/i.test(errorMsg);
+      const isQuotaError = /429|quota|limite|limit/i.test(errorMsg) && !errorMsg.includes("Aguarde");
       
       if (isQuotaError) {
         lastQuotaErrorTimestamp = Date.now();
@@ -364,9 +365,9 @@ export async function getAIInsights(bets: any[]): Promise<AIInsight[]> {
   - Responda em Português.
   - Formato JSON obrigatório.`;
 
+  checkCooldown();
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      checkCooldown();
       const response = await getAIInstance().models.generateContent({
         model,
         contents: [{ parts: [{ text: prompt }] }],
@@ -397,7 +398,7 @@ export async function getAIInsights(bets: any[]): Promise<AIInsight[]> {
       return result.insights;
     } catch (error: any) {
       const errorMsg = error.message || "";
-      const isQuota = /429|quota|limite|limit/i.test(errorMsg);
+      const isQuota = /429|quota|limite|limit/i.test(errorMsg) && !errorMsg.includes("Aguarde");
       
       if (isQuota) lastQuotaErrorTimestamp = Date.now();
       

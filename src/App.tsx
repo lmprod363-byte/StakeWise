@@ -41,6 +41,7 @@ import {
   ChevronDown,
   Check,
   X,
+  AlertTriangle,
   GripVertical,
   Menu
 } from 'lucide-react';
@@ -631,13 +632,13 @@ export default function App() {
   }, [user, activeBankrollId, bankrolls]);
 
   const saveLocalSettings = () => {
-    const total = parseFloat(localTotal) || bankroll.total;
-    const unitSize = parseFloat(localUnit) || bankroll.unitSize;
-    const dailyStopLoss = parseFloat(localStopLoss) || bankroll.dailyStopLoss;
-    const dailyStopGreen = parseFloat(localStopGreen) || bankroll.dailyStopGreen;
-    const weeklyGoal = parseFloat(localWeeklyGoal) || bankroll.weeklyGoal;
-    const monthlyGoal = parseFloat(localMonthlyGoal) || bankroll.monthlyGoal;
-    const workingCapitalPct = parseFloat(localWorkingCapital) || bankroll.workingCapitalPct;
+    const total = parseFloat(localTotal) || bankroll.total || 0;
+    const unitSize = parseFloat(localUnit) || bankroll.unitSize || 0;
+    const dailyStopLoss = parseFloat(localStopLoss) || bankroll.dailyStopLoss || 0;
+    const dailyStopGreen = parseFloat(localStopGreen) || bankroll.dailyStopGreen || 0;
+    const weeklyGoal = parseFloat(localWeeklyGoal) || bankroll.weeklyGoal || 0;
+    const monthlyGoal = parseFloat(localMonthlyGoal) || bankroll.monthlyGoal || 0;
+    const workingCapitalPct = parseFloat(localWorkingCapital) || bankroll.workingCapitalPct || 0;
     const stakeCalculationMode = localStakeCalculationMode;
     
     saveBankroll({ 
@@ -777,8 +778,8 @@ export default function App() {
         img.src = event.target?.result as string;
         img.onload = () => {
           const canvas = document.createElement('canvas');
-          const MAX_WIDTH = 1200;
-          const MAX_HEIGHT = 1200;
+          const MAX_WIDTH = 1600;
+          const MAX_HEIGHT = 1600;
           let width = img.width;
           let height = img.height;
 
@@ -799,8 +800,8 @@ export default function App() {
           const ctx = canvas.getContext('2d');
           ctx?.drawImage(img, 0, 0, width, height);
           
-          // Quality 0.7 for good balance of size and legibility
-          resolve(canvas.toDataURL('image/jpeg', 0.7));
+          // Quality 0.9 for better legibility by AI
+          resolve(canvas.toDataURL('image/jpeg', 0.9));
         };
         img.onerror = reject;
       };
@@ -1245,38 +1246,26 @@ export default function App() {
   const addBet = async (newBet: Omit<Bet, 'id' | 'profit'>, force = false) => {
     if (!user || !activeBankrollId || isRegistering) return;
 
-    // Check for exact duplicates (prevent re-registering the same ticket)
-    const isExactDuplicate = bets.some(b => 
-      !b.deleted &&
-      b.event.toLowerCase() === newBet.event.toLowerCase() &&
-      b.market.toLowerCase() === newBet.market.toLowerCase() &&
-      b.selection.toLowerCase() === newBet.selection.toLowerCase() &&
-      Math.abs(b.odds - newBet.odds) < 0.0001 &&
-      Math.abs(b.stake - newBet.stake) < 0.0001 &&
-      b.date === newBet.date
-    );
-
-    if (isExactDuplicate) {
-      console.warn("Exact duplicate bet detected, skipping registration.");
-      return;
-    }
-
-    // Check for similar duplicates for warning
+    // Identificar duplicidade (exata ou muito similar)
     const isDuplicate = bets.some(b => 
       !b.deleted &&
-      b.event.toLowerCase() === newBet.event.toLowerCase() &&
-      b.market.toLowerCase() === newBet.market.toLowerCase() &&
-      b.selection.toLowerCase() === newBet.selection.toLowerCase() &&
-      Math.abs(b.odds - newBet.odds) < 0.01 &&
-      Math.abs(b.stake - newBet.stake) < 0.01
+      b.event.toLowerCase().trim() === newBet.event.toLowerCase().trim() &&
+      b.market.toLowerCase().trim() === newBet.market.toLowerCase().trim() &&
+      b.selection.toLowerCase().trim() === newBet.selection.toLowerCase().trim() &&
+      Math.abs(Number(b.odds) - Number(newBet.odds)) < 0.001 &&
+      Math.abs(Number(b.stake) - Number(newBet.stake)) < 0.001
     );
 
     if (isDuplicate && !force) {
-      setDuplicateWarning({ confirmed: false, data: newBet });
+      setDuplicateWarning({ confirmed: false, data: newBet as Bet });
       return;
     }
 
-    const profit = calculateProfit(newBet.stake, newBet.odds, newBet.status, newBet.cashoutValue);
+    const stakeNum = Number(newBet.stake);
+    const oddsNum = Number(newBet.odds);
+    const cashoutNum = newBet.cashoutValue ? Number(newBet.cashoutValue) : undefined;
+
+    const profit = calculateProfit(stakeNum, oddsNum, newBet.status, cashoutNum);
     
     setIsRegistering(true);
     try {
@@ -1738,11 +1727,29 @@ export default function App() {
     const bet = bets.find(b => b.id === id);
     if (!bet) return;
 
+    // Optimistic cache for profit calculation to avoid lag in UI feedback
+    const finalCashout = cashoutValue !== undefined ? cashoutValue : bet.cashoutValue;
+    const optimisticProfit = calculateProfit(bet.stake, bet.odds, status, finalCashout);
+
+    // Optimistic update to UI state
+    const optimisticBets = bets.map(b => 
+      b.id === id ? { 
+        ...b, 
+        status, 
+        profit: optimisticProfit,
+        score: score !== undefined ? score : b.score,
+        cashoutValue: finalCashout
+      } : b
+    );
+    
+    // Set syncing state for visual feedback
+    setSyncingBetId(id);
+    setBets(optimisticBets);
+
     try {
-      const finalCashout = cashoutValue !== undefined ? cashoutValue : bet.cashoutValue;
       const data: any = {
         status,
-        profit: calculateProfit(bet.stake, bet.odds, status, finalCashout),
+        profit: optimisticProfit,
         updatedAt: serverTimestamp()
       };
 
@@ -1767,11 +1774,14 @@ export default function App() {
           'void': 'REEMBOLSADA',
           'cashout': 'CASHOUT'
         };
-        const impact = data.profit;
+        const impact = optimisticProfit;
         showToast(`${labels[status] || 'ATUALIZADA'}: ${impact >= 0 ? '+' : ''}${formatCurrency(impact)}`, impact >= 0 ? 'success' : 'loss');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Erro ao atualizar status:", error);
+      showToast("Erro ao atualizar: " + (error instanceof Error ? error.message : String(error)), "info");
+    } finally {
+      setSyncingBetId(null);
     }
   };
 
@@ -1804,10 +1814,15 @@ export default function App() {
   const saveBankroll = async (data: Partial<Bankroll>) => {
     if (!user || !activeBankrollId) return;
     try {
-      await updateDoc(doc(db, 'bankrolls', activeBankrollId), {
-        ...data,
-        updatedAt: serverTimestamp()
+      // Sanitize data to remove undefined and NaN values that crash Firestore
+      const sanitizedData: any = { ...data, updatedAt: serverTimestamp() };
+      Object.keys(sanitizedData).forEach(key => {
+        if (sanitizedData[key] === undefined || (typeof sanitizedData[key] === 'number' && isNaN(sanitizedData[key]))) {
+          delete sanitizedData[key];
+        }
       });
+
+      await updateDoc(doc(db, 'bankrolls', activeBankrollId), sanitizedData);
     } catch (error) {
       console.error("Erro ao salvar configurações:", error);
     }
@@ -3103,7 +3118,7 @@ export default function App() {
                            <div className="absolute inset-0 z-20 bg-bg/40 backdrop-blur-[2px] cursor-wait flex items-center justify-center">
                               <div className="flex flex-col items-center gap-4">
                                  <Loader2 className="w-8 h-8 animate-spin text-accent" />
-                                 <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA Preenchendo Automático...</span>
+                                 <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA Analisando Rigorosamente...</span>
                               </div>
                            </div>
                         )}
@@ -3749,8 +3764,8 @@ export default function App() {
                                       "inline-flex items-center gap-1.5 px-2 py-1 rounded-lg border shadow-sm",
                                       style.bg, style.border, style.color
                                     )}>
-                                      <span className="text-[10px] font-black leading-none bg-bg/20 w-4 h-4 flex items-center justify-center rounded-md">{count}</span>
-                                      <span className="text-[7px] font-black uppercase tracking-tighter pr-0.5">{bm}</span>
+                                      <span className="text-[10px] font-black leading-none bg-bg/20 min-w-4 h-4 px-1 flex items-center justify-center rounded-md">{count}</span>
+                                      <span className="text-[9px] font-black uppercase tracking-tighter pr-0.5">{bm}</span>
                                     </span>
                                   );
                                 })}
@@ -3816,240 +3831,50 @@ export default function App() {
                                 <tbody>
                                   <AnimatePresence mode="popLayout">
                                     {group.bets.map((bet: Bet) => (
-                                      <motion.tr 
-                                        key={bet.id} 
-                                        initial={{ opacity: 0, y: 10 }}
-                                        animate={{ opacity: 1, y: 0 }}
-                                        exit={{ opacity: 0, scale: 0.95 }}
-                                         className={cn(
-                                           "bg-bg/90 backdrop-blur-xl border-2 transition-all duration-500 rounded-3xl overflow-hidden group relative mb-4 hover:scale-[1.005] hover:shadow-2xl hover:shadow-indigo-500/5",
-                                           bet.status === 'won' || bet.status === 'half_win' ? "border border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
-                                           bet.status === 'lost' || bet.status === 'half_loss' ? "border border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
-                                           bet.status === 'void' ? "border border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : 
-                                           bet.status === 'cashout' ? "border-amber-500 border-2 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/[0.02]" : "border border-border/60 bg-surface/40",
-                                           bet.status !== 'pending' && "border",
-                                           selectedBetIds.has(bet.id) ? "ring-2 ring-accent border-accent" : ""
-                                        )}
-                                      >
-                                        <td className="px-6 py-5 rounded-l-3xl relative overflow-hidden">
-                                           {/* Designer ambient highlight */}
-                                           <div className="absolute top-0 left-0 w-24 h-24 bg-indigo-500/5 blur-[40px] rounded-full -translate-x-12 -translate-y-12" />
-                                           <div className="relative z-10">
-                                              <button 
-                                                onClick={() => toggleSelectBet(bet.id)}
-                                                className="text-text-dim hover:text-accent transition-colors"
-                                              >
-                                                {selectedBetIds.has(bet.id) ? (
-                                                  <CheckSquare className="w-5 h-5 text-accent" />
-                                                ) : (
-                                                  <Square className="w-5 h-5 opacity-20" />
-                                                )}
-                                              </button>
-                                           </div>
-                                        </td>
-                                        <td className="px-6 py-5">
-                                          <div className="flex items-start gap-3">
-                                            <div className={cn(
-                                              "w-1 h-10 rounded-full shadow-[0_0_10px_currentColor]",
-                                              (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent text-accent" : 
-                                              (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss text-loss" : 
-                                              bet.status === 'void' ? "bg-refund text-refund" : "bg-text-dim/20 text-transparent"
-                                            )} />
-                                            <div>
-                                              <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
-                                                {bet.market}
-                                                {(bet.bookmaker || 'Geral') && (
-                                                  <span className={cn(
-                                                    "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[7px] font-black uppercase tracking-widest leading-none border shadow-sm shrink-0",
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').bg,
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').border,
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').color
-                                                  )}>
-                                                    {bet.bookmaker || 'Geral'}
-                                                  </span>
-                                                )}
-                                                <StatusBadge 
-                                                  status={bet.status} 
-                                                  isSyncing={bet.id === syncingBetId} 
-                                                />
-                                              </div>
-                                              <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
-                                                {format(safeNewDate(bet.date), "HH:mm")} 
-                                                • <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} />
-                                                {bet.league && <span className="opacity-60">• {bet.league}</span>}
-                                                {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </td>
-                                        <td className="px-6 py-5 font-bold text-sm text-center">
-                                          <div className="flex flex-col items-center">
-                                            <span className="font-mono text-text-main">{(bet.stake / bankroll.unitSize).toFixed(2)}u</span>
-                                            <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest leading-none mt-1">
-                                              {formatCurrency(bet.stake)}
-                                            </span>
-                                          </div>
-                                        </td>
-                                        <td className="px-6 py-5 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
-                                        <td className="px-6 py-5 text-right">
-                                          <div className={cn(
-                                            "font-black text-sm font-mono",
-                                            (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
-                                            (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
-                                            bet.status === 'void' ? "text-refund" : "text-text-dim"
-                                          )}>
-                                            {bet.status === 'pending' ? <span className="opacity-30">---</span> : formatCurrency(bet.stake + bet.profit)}
-                                            {bet.status !== 'pending' && (
-                                              <div className={cn(
-                                                "text-[9px] font-black uppercase tracking-widest mt-0.5",
-                                                (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
-                                                (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
-                                                bet.status === 'void' ? "text-refund" : "text-text-dim"
-                                              )}>
-                                                {(bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
-                                              </div>
-                                            )}
-                                          </div>
-                                        </td>
-                                        <td className="px-6 py-5 rounded-r-2xl text-right">
-                                          <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-                                              <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
-                                                {/* Botão Sincronizar Placar (Zap) */}
-                                                {bet.status === 'pending' && (
-                                                  <button 
-                                                    onClick={() => syncOnlyScores([bet])}
-                                                    disabled={isSyncingScores || isSyncingResults}
-                                                    className={cn(
-                                                      "p-1.5 rounded-md transition-all hover:scale-110 border border-transparent",
-                                                      (syncingBetId === bet.id && isSyncingScores) ? "animate-spin text-accent" : "text-accent/60 hover:text-accent hover:border-accent/20"
-                                                    )}
-                                                    title="Buscar Placar Real"
-                                                  >
-                                                    <Zap className="w-4 h-4" />
-                                                  </button>
-                                                )}
-                                                
-                                                {/* Botão Sincronizar Tudo (Refresh) */}
-                                                <button 
-                                                  onClick={() => syncResults([bet], true)}
-                                                  disabled={isSyncingResults || isSyncingScores}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    (syncingBetId === bet.id && isSyncingResults) ? "animate-spin text-accent" : "text-text-dim hover:text-accent"
-                                                  )}
-                                                  title="Conferir Resultado Final"
-                                                >
-                                                  <RefreshCw className="w-4 h-4" />
-                                                </button>
-                                                
-                                                <div className="w-px h-4 bg-border/40 mx-1" />
-                                                
-                                                <button 
-                                                  onClick={() => updateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
-                                                  )}
-                                                  title="Ganha"
-                                                >
-                                                  <CheckCircle2 className="w-4 h-4" />
-                                                </button>
-                                                <button 
-                                                  onClick={() => updateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
-                                                  )}
-                                                  title="Meio Green"
-                                                >
-                                                  <div className="text-[9px] font-black">½G</div>
-                                                </button>
-                                                <button 
-                                                  onClick={() => updateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
-                                                  )}
-                                                  title="Perdida"
-                                                >
-                                                  <XCircle className="w-4 h-4" />
-                                                </button>
-                                                <button 
-                                                  onClick={() => updateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
-                                                  )}
-                                                  title="Meio Red"
-                                                >
-                                                  <div className="text-[9px] font-black">½R</div>
-                                                </button>
-                                                <button 
-                                                  onClick={() => updateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
-                                                  )}
-                                                  title="Reembolsada"
-                                                >
-                                                  <HelpCircle className="w-4 h-4" />
-                                                </button>
-                                                <button 
-                                                  onClick={() => {
-                                                    if (bet.status === 'cashout') {
-                                                      updateStatus(bet.id, 'pending');
-                                                    } else {
-                                                      setCashoutBetId(bet.id);
-                                                      setCashoutAmount(bet.stake.toString());
-                                                    }
-                                                  }}
-                                                  className={cn(
-                                                    "p-1.5 rounded-md transition-all hover:scale-110",
-                                                    bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500"
-                                                  )}
-                                                  title="Encerrar"
-                                                >
-                                                  <DollarSign className="w-4 h-4" />
-                                                </button>
-                                                <button 
-                                                  onClick={() => {
-                                                      setEditingBetId(bet.id);
-                                                      const isCustom = bet.bookmaker !== '' && !userBookmakers.includes(bet.bookmaker);
-                                                      setIsManualBookmaker(isCustom);
-                                                      setBetForm({
-                                                          date: format(safeNewDate(bet.date), "yyyy-MM-dd'T'HH:mm"),
-                                                          sport: bet.sport,
-                                                          event: bet.event,
-                                                          market: bet.market,
-                                                          selection: bet.selection,
-                                                          odds: bet.odds.toString(),
-                                                          stake: bet.stake.toString(),
-                                                          status: bet.status,
-                                                          cashoutValue: bet.cashoutValue?.toString() || '',
-                                                          bookmaker: bet.bookmaker || 'Bet365',
-                                                          bankrollId: bet.bankrollId || activeBankrollId || '',
-                                                          isLive: bet.isLive,
-                                                          betId: bet.betId || '',
-                                                          league: bet.league || ''
-                                                      });
-                                                      setShowEditModal(true);
-                                                  }}
-                                                  className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
-                                                  title="Editar"
-                                                >
-                                                  <Settings2 className="w-4 h-4" />
-                                                </button>
-                                                <button 
-                                                  onClick={() => deleteBet(bet.id)}
-                                                  className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/5 rounded-md transition-all"
-                                                  title="Mover para Lixeira"
-                                                >
-                                                  <Trash2 className="w-4 h-4" />
-                                                </button>
-                                              </div>
-                                          </div>
-                                        </td>
-                                      </motion.tr>
+                                      <HistoryBetRow 
+                                        key={bet.id}
+                                        bet={bet}
+                                        selected={selectedBetIds.has(bet.id)}
+                                        onToggleSelect={toggleSelectBet}
+                                        syncingBetId={syncingBetId}
+                                        isSyncingScores={isSyncingScores}
+                                        isSyncingResults={isSyncingResults}
+                                        onSyncOnlyScores={syncOnlyScores}
+                                        onSyncResults={syncResults}
+                                        onUpdateStatus={updateStatus}
+                                        onEdit={(b) => {
+                                          setEditingBetId(b.id);
+                                          const isCustom = b.bookmaker !== '' && !userBookmakers.includes(b.bookmaker);
+                                          setIsManualBookmaker(isCustom);
+                                          setBetForm({
+                                              date: format(safeNewDate(b.date), "yyyy-MM-dd'T'HH:mm"),
+                                              sport: b.sport,
+                                              event: b.event,
+                                              market: b.market,
+                                              selection: b.selection,
+                                              odds: b.odds.toString(),
+                                              stake: b.stake.toString(),
+                                              status: b.status,
+                                              cashoutValue: b.cashoutValue?.toString() || '',
+                                              bookmaker: b.bookmaker || 'Bet365',
+                                              bankrollId: b.bankrollId || activeBankrollId || '',
+                                              isLive: b.isLive,
+                                              betId: b.betId || '',
+                                              league: b.league || ''
+                                          });
+                                          setShowEditModal(true);
+                                        }}
+                                        onDelete={deleteBet}
+                                        onCashout={(b) => {
+                                          if (b.status === 'cashout') {
+                                            updateStatus(b.id, 'pending');
+                                          } else {
+                                            setCashoutBetId(b.id);
+                                            setCashoutAmount(b.stake.toString());
+                                          }
+                                        }}
+                                        unitSize={bankroll.unitSize}
+                                      />
                                     ))}
                                   </AnimatePresence>
                                 </tbody>
@@ -4061,7 +3886,6 @@ export default function App() {
                             <div className="md:hidden space-y-6 px-2 mt-4">
                               {group.bets.map((bet: Bet) => (
                                 <motion.div 
-                                  layout
                                   initial={{ opacity: 0, y: 10 }}
                                   animate={{ opacity: 1, y: 0 }}
                                   key={bet.id}
@@ -4087,13 +3911,13 @@ export default function App() {
                                           </span>
                                           {(bet.bookmaker || 'Geral') && (
                                             <span className={cn(
-                                              "inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-[8px] font-black uppercase tracking-widest leading-none border shadow-lg",
+                                              "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black uppercase tracking-[0.1em] leading-none border shadow-lg",
                                               getBookmakerStyle(bet.bookmaker || 'Geral').bg,
                                               getBookmakerStyle(bet.bookmaker || 'Geral').border,
                                               getBookmakerStyle(bet.bookmaker || 'Geral').color,
                                               getBookmakerStyle(bet.bookmaker || 'Geral').glow
                                             )}>
-                                              <div className={cn("w-1.5 h-1.5 rounded-full bg-current")} />
+                                              <div className={cn("w-2 h-2 rounded-full bg-current shadow-[0_0_8px_currentColor]")} />
                                               {bet.bookmaker || 'Geral'}
                                             </span>
                                           )}
@@ -4727,7 +4551,19 @@ export default function App() {
                                   {group.bets.map((bet: Bet) => (
                                     <tr key={bet.id} className="hover:bg-zinc-800/10 transition-colors">
                                       <td className="px-6 py-4">
-                                        <div className="font-bold text-text-main text-sm uppercase">{bet.selection}</div>
+                                        <div className="flex items-center gap-2 mb-1">
+                                          <div className="font-bold text-text-main text-sm uppercase">{bet.selection}</div>
+                                          {(bet.bookmaker || 'Geral') && (
+                                            <span className={cn(
+                                              "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter leading-none border",
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').bg,
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').border,
+                                              getBookmakerStyle(bet.bookmaker || 'Geral').color
+                                            )}>
+                                              {bet.bookmaker || 'Geral'}
+                                            </span>
+                                          )}
+                                        </div>
                                         <div className="text-[10px] text-text-dim font-bold uppercase mt-0.5">{bet.event}</div>
                                       </td>
                                       <td className="px-6 py-4 text-right">
@@ -6525,6 +6361,63 @@ export default function App() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {duplicateWarning && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-bg/90 backdrop-blur-md">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="glass-card max-w-sm w-full p-6 border border-white/10 shadow-2xl space-y-6"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-3 bg-amber-500/20 text-amber-500 rounded-2xl">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-tighter text-text-main">Aposta Duplicada</h3>
+                  <p className="text-[9px] font-bold text-text-dim uppercase tracking-widest">Identificamos um registro idêntico</p>
+                </div>
+              </div>
+
+              <div className="p-4 bg-white/5 rounded-2xl border border-white/5 space-y-3">
+                <div className="flex justify-between items-start gap-4">
+                  <div className="flex-1">
+                    <p className="text-[10px] font-black text-text-dim uppercase tracking-widest mb-1 truncate">{duplicateWarning.data.event}</p>
+                    <p className="text-[11px] font-bold text-text-main uppercase">{duplicateWarning.data.market}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-[10px] font-black text-accent uppercase">{duplicateWarning.data.selection}</p>
+                    <p className="text-[10px] font-black text-text-main mt-1">
+                      @{duplicateWarning.data.odds} • {formatCurrency(Number(duplicateWarning.data.stake))}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-text-main/70 font-medium leading-relaxed text-center px-4">
+                Esta entrada já existe em seu histórico. Deseja registrar novamente mesmo assim?
+              </p>
+
+              <div className="flex gap-3 pt-2">
+                <button 
+                  onClick={() => setDuplicateWarning(null)}
+                  className="flex-1 py-3 rounded-xl border border-border text-[9px] font-black uppercase tracking-widest text-text-dim hover:bg-white/5 transition-all"
+                >
+                  Não, Cancelar
+                </button>
+                <button 
+                  onClick={() => addBet(duplicateWarning.data, true)}
+                  className="flex-1 py-3 rounded-xl bg-accent text-bg text-[9px] font-black uppercase tracking-widest hover:brightness-110 shadow-lg shadow-accent/20 transition-all"
+                >
+                  Sim, Manter
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {successToast && (
           <motion.div 
             initial={{ opacity: 0, scale: 0.9, y: 20, x: '-50%' }}
@@ -6576,6 +6469,469 @@ function StatsCard({ title, value, trend, icon }: { title: string, value: string
     </motion.div>
   )
 }
+
+
+interface HistoryBetRowProps {
+  bet: Bet;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+  syncingBetId: string | null;
+  isSyncingScores: boolean;
+  isSyncingResults: boolean;
+  onSyncOnlyScores: (bets: Bet[]) => void;
+  onSyncResults: (bets: Bet[], isManual?: boolean) => void;
+  onUpdateStatus: (id: string, status: Bet['status']) => void;
+  onEdit: (bet: Bet) => void;
+  onDelete: (id: string) => void;
+  onCashout: (bet: Bet) => void;
+  unitSize: number;
+}
+
+const HistoryBetRow = memo(({ 
+  bet, 
+  selected, 
+  onToggleSelect, 
+  syncingBetId, 
+  isSyncingScores, 
+  isSyncingResults, 
+  onSyncOnlyScores, 
+  onSyncResults, 
+  onUpdateStatus, 
+  onEdit, 
+  onDelete, 
+  onCashout,
+  unitSize
+}: HistoryBetRowProps) => {
+  const betDateFormatted = format(safeNewDate(bet.date), "HH:mm");
+  const bmStyle = getBookmakerStyle(bet.bookmaker || 'Geral');
+  
+  return (
+    <motion.tr 
+      key={bet.id} 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      className={cn(
+        "bg-bg/90 backdrop-blur-xl border-2 transition-all duration-500 rounded-3xl overflow-hidden group relative mb-4 hover:scale-[1.005] hover:shadow-2xl hover:shadow-indigo-500/5",
+        bet.status === 'won' || bet.status === 'half_win' ? "border border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
+        bet.status === 'lost' || bet.status === 'half_loss' ? "border border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
+        bet.status === 'void' ? "border border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : 
+        bet.status === 'cashout' ? "border-amber-500 border-2 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/[0.02]" : "border border-border/60 bg-surface/40",
+        bet.status !== 'pending' && "border",
+        selected ? "ring-2 ring-accent border-accent" : ""
+      )}
+    >
+      <td className="px-6 py-5 rounded-l-3xl relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-24 h-24 bg-indigo-500/5 blur-[40px] rounded-full -translate-x-12 -translate-y-12" />
+        <div className="relative z-10">
+          <button 
+            onClick={() => onToggleSelect(bet.id)}
+            className="text-text-dim hover:text-accent transition-colors"
+          >
+            {selected ? (
+              <CheckSquare className="w-5 h-5 text-accent" />
+            ) : (
+              <Square className="w-5 h-5 opacity-20" />
+            )}
+          </button>
+        </div>
+      </td>
+      <td className="px-6 py-5">
+        <div className="flex items-start gap-3">
+          <div className={cn(
+            "w-1 h-10 rounded-full shadow-[0_0_10px_currentColor]",
+            (bet.status === 'won' || bet.status === 'half_win') ? "bg-accent text-accent" : 
+            (bet.status === 'lost' || bet.status === 'half_loss') ? "bg-loss text-loss" : 
+            bet.status === 'void' ? "bg-refund text-refund" : "bg-text-dim/20 text-transparent"
+          )} />
+          <div>
+            <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
+              {bet.market}
+              {(bet.bookmaker || 'Geral') && (
+                <span className={cn(
+                  "inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-[0.1em] leading-none border shadow-sm shrink-0",
+                  bmStyle.bg,
+                  bmStyle.border,
+                  bmStyle.color
+                )}>
+                  {bet.bookmaker || 'Geral'}
+                </span>
+              )}
+              <StatusBadge 
+                status={bet.status} 
+                isSyncing={bet.id === syncingBetId} 
+              />
+            </div>
+            <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
+              {betDateFormatted} 
+              • <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} />
+              {bet.league && <span className="opacity-60">• {bet.league}</span>}
+              {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
+            </div>
+          </div>
+        </div>
+      </td>
+      <td className="px-6 py-5 font-bold text-sm text-center">
+        <div className="flex flex-col items-center">
+          <span className="font-mono text-text-main">{(bet.stake / unitSize).toFixed(2)}u</span>
+          <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest leading-none mt-1">
+            {formatCurrency(bet.stake)}
+          </span>
+        </div>
+      </td>
+      <td className="px-6 py-5 font-black font-mono text-sm text-accent text-center opacity-80">{bet.odds.toFixed(2)}</td>
+      <td className="px-6 py-5 text-right">
+        <div className={cn(
+          "font-black text-sm font-mono",
+          (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
+          (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
+          bet.status === 'void' ? "text-refund" : "text-text-dim"
+        )}>
+          {bet.status === 'pending' ? <span className="opacity-30">---</span> : formatCurrency(bet.stake + bet.profit)}
+          {bet.status !== 'pending' && (
+            <div className={cn(
+              "text-[9px] font-black uppercase tracking-widest mt-0.5",
+              (bet.status === 'won' || bet.status === 'half_win') ? "text-accent" : 
+              (bet.status === 'lost' || bet.status === 'half_loss') ? "text-loss" : 
+              bet.status === 'void' ? "text-refund" : "text-text-dim"
+            )}>
+              {(bet.profit > 0 ? '+' : '') + formatCurrency(bet.profit)}
+            </div>
+          )}
+        </div>
+      </td>
+      <td className="px-6 py-5 rounded-r-2xl text-right">
+        <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
+            <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
+              {bet.status === 'pending' && (
+                <button 
+                  onClick={() => onSyncOnlyScores([bet])}
+                  disabled={isSyncingScores || isSyncingResults}
+                  className={cn(
+                    "p-1.5 rounded-md transition-all hover:scale-110 border border-transparent",
+                    (syncingBetId === bet.id && isSyncingScores) ? "animate-spin text-accent" : "text-accent/60 hover:text-accent hover:border-accent/20"
+                  )}
+                  title="Buscar Placar Real"
+                >
+                  <Zap className="w-4 h-4" />
+                </button>
+              )}
+              
+              <button 
+                onClick={() => onSyncResults([bet], true)}
+                disabled={isSyncingResults || isSyncingScores}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  (syncingBetId === bet.id && isSyncingResults) ? "animate-spin text-accent" : "text-text-dim hover:text-accent"
+                )}
+                title="Conferir Resultado Final"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
+              
+              <div className="w-px h-4 bg-border/40 mx-1" />
+              
+              <button 
+                onClick={() => onUpdateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                )}
+                title="Ganha"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => onUpdateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                )}
+                title="Meio Green"
+              >
+                <div className="text-[9px] font-black">½G</div>
+              </button>
+              <button 
+                onClick={() => onUpdateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                )}
+                title="Perdida"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => onUpdateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                )}
+                title="Meio Red"
+              >
+                <div className="text-[9px] font-black">½R</div>
+              </button>
+              <button 
+                onClick={() => onUpdateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
+                )}
+                title="Reembolsada"
+              >
+                <HelpCircle className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => onCashout(bet)}
+                className={cn(
+                  "p-1.5 rounded-md transition-all hover:scale-110",
+                  bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500"
+                )}
+                title="Encerrar"
+              >
+                <DollarSign className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => onEdit(bet)}
+                className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
+                title="Editar"
+              >
+                <Settings2 className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => onDelete(bet.id)}
+                className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/5 rounded-md transition-all"
+                title="Mover para Lixeira"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+        </div>
+      </td>
+    </motion.tr>
+  );
+});
+
+interface HistoryBetCardProps {
+  bet: Bet;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
+  syncingBetId: string | null;
+  isSyncingScores: boolean;
+  isSyncingResults: boolean;
+  onSyncOnlyScores: (bets: Bet[]) => void;
+  onSyncResults: (bets: Bet[], isManual?: boolean) => void;
+  onUpdateStatus: (id: string, status: Bet['status']) => void;
+  onEdit: (bet: Bet) => void;
+  onDelete: (id: string) => void;
+  onCashout: (bet: Bet) => void;
+  unitSize: number;
+}
+
+const HistoryBetCard = memo(({
+  bet,
+  selected,
+  onToggleSelect,
+  syncingBetId,
+  isSyncingScores,
+  isSyncingResults,
+  onSyncOnlyScores,
+  onSyncResults,
+  onUpdateStatus,
+  onEdit,
+  onDelete,
+  onCashout,
+  unitSize
+}: HistoryBetCardProps) => {
+  const betDateFormatted = format(safeNewDate(bet.date), "HH:mm");
+  const bmStyle = getBookmakerStyle(bet.bookmaker || 'Geral');
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      key={bet.id}
+      className={cn(
+        "bg-bg/90 backdrop-blur-2xl border-2 p-6 rounded-[32px] space-y-4 shadow-2xl transition-all duration-500 active:scale-[0.99] relative overflow-hidden mb-6",
+        (bet.status === 'won' || bet.status === 'half_win') ? "border-accent border-4 shadow-[0_0_15px_rgba(0,255,149,0.2)] bg-accent/[0.01]" : 
+        (bet.status === 'lost' || bet.status === 'half_loss') ? "border-loss border-4 shadow-[0_0_15px_rgba(255,62,62,0.2)] bg-loss/[0.01]" : 
+        bet.status === 'void' ? "border-refund border-4 shadow-[0_0_15px_rgba(255,184,0,0.2)] bg-refund/[0.01]" : 
+        bet.status === 'cashout' ? "border-amber-500 border-4 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/[0.02]" : "border-border/60 bg-surface/40",
+        selected && "ring-2 ring-accent border-accent"
+      )}
+    >
+       <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 blur-[60px] rounded-full translate-x-12 -translate-y-12" />
+       <div className="flex justify-between items-start mb-4">
+          <div className="flex items-center gap-3">
+            <button onClick={() => onToggleSelect(bet.id)} className="transition-transform active:scale-90">
+               {selected ? <CheckSquare className="w-5 h-5 text-accent" /> : <Square className="w-5 h-5 text-text-dim/30" />}
+            </button>
+            <div className="flex flex-col gap-1.5">
+              <span className="inline-flex items-center justify-center text-[10px] font-black uppercase tracking-widest text-text-main bg-bg px-2 py-1 rounded-lg border border-border/40 shadow-sm leading-none min-w-[50px]">
+                {betDateFormatted}
+              </span>
+              {(bet.bookmaker || 'Geral') && (
+                <span className={cn(
+                  "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] font-black uppercase tracking-[0.1em] leading-none border shadow-lg",
+                  bmStyle.bg,
+                  bmStyle.border,
+                  bmStyle.color,
+                  bmStyle.glow
+                )}>
+                  <div className={cn("w-2 h-2 rounded-full bg-current shadow-[0_0_8px_currentColor]")} />
+                  {bet.bookmaker || 'Geral'}
+                </span>
+              )}
+            </div>
+          </div>
+          <StatusBadge status={bet.status} isSyncing={bet.id === syncingBetId} />
+       </div>
+       
+       <div className="space-y-1">
+         <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-[9px] font-black uppercase tracking-widest text-accent/80">
+              {bet.sport} • {betDateFormatted}
+            </p>
+            {bet.isLive && <Zap className="w-2.5 h-2.5 text-accent fill-accent" />}
+         </div>
+         <h4 className="text-base font-black uppercase text-text-main leading-tight py-1">{bet.market}</h4>
+           <div className="space-y-1 pt-2">
+              <p className="text-[11px] font-bold text-text-dim uppercase opacity-60 leading-tight">
+                <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} mobile />
+              </p>
+            {(bet.league || bet.betId) && (
+              <div className="flex items-center gap-3">
+                {bet.league && <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest">Liga: {bet.league}</span>}
+                {bet.betId && <span className="text-[8px] font-bold text-text-dim/40 uppercase tracking-tighter">Ref: {bet.betId}</span>}
+              </div>
+            )}
+         </div>
+       </div>
+
+       <div className="grid grid-cols-3 gap-2 border-t border-b border-border/30 py-3">
+          <div className="text-center">
+            <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Stake</p>
+            <p className="text-xs font-mono font-bold leading-none">{(bet.stake / unitSize).toFixed(1)}u</p>
+            <p className="text-[8px] font-bold text-text-dim mt-1">{formatCurrency(bet.stake)}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Odd</p>
+            <p className="text-xs font-mono font-bold text-accent">{bet.odds.toFixed(2)}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-[8px] font-black uppercase tracking-widest text-text-dim mb-1">Retorno</p>
+            <p className="text-xs font-mono font-bold text-text-main leading-none">
+              {bet.status === 'pending' ? '-' : formatCurrency(bet.stake + bet.profit)}
+            </p>
+            {bet.status !== 'pending' && bet.profit !== 0 && (
+              <p className={cn(
+                 "text-[8px] font-bold mt-1",
+                 bet.profit > 0 ? "text-accent" : "text-loss"
+               )}>
+                 {bet.profit > 0 ? '+' : ''}{formatCurrency(bet.profit)}
+              </p>
+            )}
+          </div>
+       </div>
+
+           <div className="mt-8 space-y-3">
+              <div className="bg-bg/60 backdrop-blur-2xl rounded-xl md:rounded-2xl p-1 flex items-center justify-between border border-white/5 shadow-xl">
+                 <div className="flex items-center gap-1 focus-within:ring-0 overflow-x-auto no-scrollbar">
+                   <button 
+                     onClick={(e) => { e.stopPropagation(); onSyncOnlyScores([bet]); }}
+                     disabled={isSyncingScores || isSyncingResults}
+                     className={cn(
+                       "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                       (syncingBetId === bet.id && isSyncingScores)
+                         ? "bg-blue-500 border-blue-500 text-white animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.4)]" 
+                         : "bg-blue-500/10 border-blue-500/20 text-blue-400 shadow-sm hover:bg-blue-500/20 hover:scale-105"
+                     )}
+                     title="Buscar Placar Real"
+                   >
+                     {syncingBetId === bet.id && isSyncingScores ? (
+                       <Loader2 className="w-4 h-4 animate-spin" />
+                     ) : (
+                       <Zap className="w-4 h-4" />
+                     )}
+                   </button>
+
+                   <button 
+                     onClick={(e) => { e.stopPropagation(); onSyncResults([bet], true); }}
+                     disabled={isSyncingResults || isSyncingScores}
+                     className={cn(
+                       "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                       (syncingBetId === bet.id && isSyncingResults)
+                         ? "bg-purple-500 border-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]" 
+                         : "bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20 hover:scale-105"
+                     )}
+                     title="Atualizar status da aposta"
+                   >
+                     {syncingBetId === bet.id && isSyncingResults ? (
+                       <Loader2 className="w-4 h-4 animate-spin" />
+                     ) : (
+                       <RefreshCw className="w-4 h-4" />
+                     )}
+                   </button>
+                   
+                   <div className="w-px h-6 bg-border/20 mx-1 shrink-0" />
+
+                   <button 
+                     onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won'); }}
+                     className={cn(
+                       "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                       bet.status === 'won' 
+                         ? "bg-accent border-accent text-bg shadow-[0_0_10px_rgba(0,255,149,0.4)]" 
+                         : "bg-accent/10 border-accent/20 text-accent hover:bg-accent/20"
+                     )}
+                     title="Green"
+                   >
+                     <CheckCircle2 className="w-4 h-4" />
+                   </button>
+                   <button 
+                      onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost'); }}
+                      className={cn(
+                        "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                        bet.status === 'lost' 
+                          ? "bg-loss border-loss text-white shadow-[0_0_10px_rgba(239,68,68,0.4)]" 
+                          : "bg-loss/10 border-loss/20 text-loss hover:bg-loss/20"
+                      )}
+                      title="Red"
+                   >
+                     <XCircle className="w-4 h-4" />
+                   </button>
+                   <button 
+                      onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void'); }}
+                      className={cn(
+                        "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
+                        bet.status === 'void' 
+                          ? "bg-refund border-refund text-white shadow-[0_0_10px_rgba(255,184,0,0.4)]" 
+                          : "bg-refund/10 border-refund/20 text-refund hover:bg-refund/20"
+                      )}
+                      title="Reembolso"
+                   >
+                     <RotateCcw className="w-4 h-4" />
+                   </button>
+                 </div>
+
+                 <div className="flex items-center gap-1.5 ml-2 pr-2">
+                   <button 
+                     onClick={(e) => { e.stopPropagation(); onEdit(bet); }}
+                     className="p-2.5 bg-surface/80 text-text-dim hover:text-accent rounded-xl border border-border/50 transition-all hover:scale-105 active:scale-90"
+                   >
+                     <Pencil className="w-4 h-4" />
+                   </button>
+                   <button 
+                     onClick={(e) => { e.stopPropagation(); onDelete(bet.id); }}
+                     className="p-2.5 bg-loss/5 text-loss/60 hover:text-loss rounded-xl border border-loss/10 transition-all hover:scale-105 active:scale-90"
+                   >
+                     <Trash2 className="w-4 h-4" />
+                   </button>
+                 </div>
+              </div>
+           </div>
+    </motion.div>
+  );
+});
 
 function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?: boolean }) {
   if (isSyncing) {
