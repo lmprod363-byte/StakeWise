@@ -21,7 +21,6 @@ export interface Bet {
   isLive?: boolean;
   score?: string;
   matchTime?: string;
-  autoSync?: boolean;
   deleted?: boolean;
   bankrollId: string;
 }
@@ -34,6 +33,12 @@ export interface Bankroll {
   userId: string;
   createdAt: any;
   order?: number;
+  dailyStopLoss?: number;
+  dailyStopGreen?: number;
+  weeklyGoal?: number;
+  monthlyGoal?: number;
+  workingCapitalPct?: number; // gordura %
+  stakeCalculationMode?: 'initial' | 'current';
 }
 
 export interface Stats {

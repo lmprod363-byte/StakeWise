@@ -21,6 +21,7 @@ import {
   Edit3,
   LayoutDashboard,
   Target,
+  ShieldCheck,
   LogOut,
   LogIn,
   Pencil,
@@ -203,30 +204,31 @@ const RenderEventWithScore = memo(({ event, score, matchTime, mobile = false }: 
   );
 });
 
-const SyncProgressBar = memo(({ className }: { className?: string }) => {
-  const [progress, setProgress] = useState(0);
-
-  useEffect(() => {
-    // Sincroniza o progresso com o ciclo de 3 minutos (180.000ms)
-    const update = () => {
-      const now = Date.now();
-      const cycleMs = 180000;
-      const elapsed = now % cycleMs;
-      setProgress((elapsed / cycleMs) * 100);
-    };
-    
-    update();
-    const interval = setInterval(update, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
+const GoalProgressBar = memo(({ label, current, target, isLoss = false, className }: { label: string, current: number, target: number, isLoss?: boolean, className?: string }) => {
+  const percent = target !== 0 ? Math.min((Math.abs(current) / Math.abs(target)) * 100, 100) : 0;
+  const isTargetMet = target !== 0 && (isLoss ? current <= target : current >= target);
+  
   return (
-    <div className={cn("bg-white/5 rounded-full overflow-hidden relative", className)}>
-      <motion.div 
-        animate={{ width: `${progress}%` }}
-        transition={{ duration: 1, ease: "linear" }}
-        className="absolute inset-y-0 left-0 bg-accent shadow-[0_0_10px_rgba(0,255,149,0.5)]"
-      />
+    <div className={cn("space-y-1.5", className)}>
+      <div className="flex justify-between items-end">
+        <span className="text-[9px] font-black uppercase tracking-widest text-text-dim">{label}</span>
+        <span className={cn("text-[10px] font-black tabular-nums font-mono uppercase tracking-tighter", 
+          isTargetMet ? (isLoss ? "text-loss" : "text-accent") : "text-text-main"
+        )}>
+          {formatCurrency(current)} <span className="text-[8px] text-text-dim/50 font-sans mx-1">/</span> {formatCurrency(target)}
+        </span>
+      </div>
+      <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+        <motion.div 
+          initial={{ width: 0 }}
+          animate={{ width: `${percent}%` }}
+          className={cn("h-full transition-all duration-1000", 
+            isLoss 
+              ? (current <= target ? "bg-loss shadow-[0_0_8px_rgba(239,68,68,0.4)]" : "bg-loss/30") 
+              : (current >= target ? "bg-accent shadow-[0_0_8px_rgba(0,255,149,0.4)]" : "bg-accent/30")
+          )}
+        />
+      </div>
     </div>
   );
 });
@@ -252,7 +254,7 @@ export default function App() {
     }
   }, [bankroll.id, activeBankrollId]);
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash' | 'transfers'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash' | 'transfers' | 'stake'>('dashboard');
   const [viewAllBankrolls, setViewAllBankrolls] = useState(false);
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('all');
   const [editingBetId, setEditingBetId] = useState<string | null>(null);
@@ -302,7 +304,13 @@ export default function App() {
   // Local settings state for inputs (fixes jumpy bug)
   const [localTotal, setLocalTotal] = useState('');
   const [localUnit, setLocalUnit] = useState('');
+  const [localStopLoss, setLocalStopLoss] = useState('');
+  const [localStopGreen, setLocalStopGreen] = useState('');
+  const [localWeeklyGoal, setLocalWeeklyGoal] = useState('');
+  const [localMonthlyGoal, setLocalMonthlyGoal] = useState('');
+  const [localWorkingCapital, setLocalWorkingCapital] = useState('');
   const [localActualBalance, setLocalActualBalance] = useState('');
+  const [localStakeCalculationMode, setLocalStakeCalculationMode] = useState<'initial' | 'current'>('initial');
   const [showAllPercentages, setShowAllPercentages] = useState(false);
   const [manualAiKey, setManualAiKey] = useState(localStorage.getItem('STAKEWISE_CUSTOM_GEMINI_KEY') || '');
   const [isAddingBankroll, setIsAddingBankroll] = useState(false);
@@ -331,30 +339,7 @@ export default function App() {
     }
   }, [bets.length, activeTab]);
 
-  useEffect(() => {
-    let mainSyncInterval: NodeJS.Timeout;
 
-    const startIntervals = () => {
-      // Inicia com um delay para não bater de frente com o carregamento inicial
-      setTimeout(() => {
-        if (user && document.visibilityState === 'visible') {
-          syncOnlyScores();
-        }
-      }, 5000);
-
-      mainSyncInterval = setInterval(() => {
-        if (user && document.visibilityState === 'visible') {
-          syncOnlyScores();
-        }
-      }, 900000); // 15 minutos
-    };
-
-    if (user) {
-      startIntervals();
-    }
-
-    return () => clearInterval(mainSyncInterval);
-  }, [user?.uid]); // Estabilizado
 
   const toggleDateCollapse = (date: string) => {
     setCollapsedDates(prev => {
@@ -648,7 +633,30 @@ export default function App() {
   const saveLocalSettings = () => {
     const total = parseFloat(localTotal) || bankroll.total;
     const unitSize = parseFloat(localUnit) || bankroll.unitSize;
-    saveBankroll({ total, unitSize });
+    const dailyStopLoss = parseFloat(localStopLoss) || bankroll.dailyStopLoss;
+    const dailyStopGreen = parseFloat(localStopGreen) || bankroll.dailyStopGreen;
+    const weeklyGoal = parseFloat(localWeeklyGoal) || bankroll.weeklyGoal;
+    const monthlyGoal = parseFloat(localMonthlyGoal) || bankroll.monthlyGoal;
+    const workingCapitalPct = parseFloat(localWorkingCapital) || bankroll.workingCapitalPct;
+    const stakeCalculationMode = localStakeCalculationMode;
+    
+    saveBankroll({ 
+      total, 
+      unitSize, 
+      dailyStopLoss, 
+      dailyStopGreen, 
+      weeklyGoal, 
+      monthlyGoal, 
+      workingCapitalPct,
+      stakeCalculationMode
+    });
+    
+    setLocalStopLoss('');
+    setLocalStopGreen('');
+    setLocalWeeklyGoal('');
+    setLocalMonthlyGoal('');
+    setLocalWorkingCapital('');
+    showToast("Configurações salvas!", "success");
   };
 
   const syncBalanceAction = () => {
@@ -1117,6 +1125,37 @@ export default function App() {
     };
   }, [bets, bookmakerBalances, activeBankrollId]);
 
+  const goalStats = useMemo(() => {
+    const activeBets = bets.filter(b => !b.deleted && b.bankrollId === activeBankrollId);
+    
+    const today = new Date();
+    const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    
+    const dayBets = activeBets.filter(b => safeNewDate(b.date).getTime() >= startOfToday);
+    const dayProfit = dayBets.filter(b => b.status !== 'pending').reduce((acc, b) => acc + b.profit, 0);
+
+    // Weekly stats (Start from current week's Monday)
+    const dayOfWeek = today.getDay(); // 0 is Sunday, 1 is Monday
+    const diffToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+    const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - diffToMonday);
+    const startOfWeek = monday.getTime();
+    
+    const weekBets = activeBets.filter(b => safeNewDate(b.date).getTime() >= startOfWeek);
+    const weekProfit = weekBets.filter(b => b.status !== 'pending').reduce((acc, b) => acc + b.profit, 0);
+
+    // Monthly stats
+    const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).getTime();
+    const monthBets = activeBets.filter(b => safeNewDate(b.date).getTime() >= startOfMonth);
+    const monthProfit = monthBets.filter(b => b.status !== 'pending').reduce((acc, b) => acc + b.profit, 0);
+
+    return {
+      dayProfit,
+      weekProfit,
+      monthProfit,
+      dailyGordura: Math.max(0, dayProfit - (bankroll.dailyStopGreen || 0))
+    };
+  }, [bets, activeBankrollId, bankroll.dailyStopGreen]);
+
   const prevBankrollIdRef = useRef<string | null>(null);
   const prevBalanceRef = useRef<number | null>(null);
   const [balanceDelta, setBalanceDelta] = useState<number | null>(null);
@@ -1428,7 +1467,7 @@ export default function App() {
         'status', 'profit', 'updatedAt', 'odds', 'stake', 
         'selection', 'market', 'event', 'sport', 'league', 'date', 
         'deleted', 'cashoutValue', 'notes', 'bookmaker', 'bankrollId', 'userId',
-        'betId', 'isLive', 'score', 'matchTime', 'autoSync'
+        'betId', 'isLive', 'score', 'matchTime'
       ];
 
       // Add common identification fields if missing
@@ -1667,45 +1706,20 @@ export default function App() {
     }
   };
 
-  const syncOnlyScores = async (specificBets?: Bet[]) => {
+  const syncOnlyScores = async (specificBets: Bet[]) => {
     if (!user || isSyncingResults || isSyncingScores) return;
     
-    const now = new Date();
-    const MATCH_TIMEOUT_MS = 105 * 60 * 1000; // 105 minutos (90 + acréscimos)
-    
-    // Filtra apenas apostas pendentes e não deletadas
-    // Se for manual (specificBets), ignora o filtro autoSync. Se for automático, exige autoSync: true.
-    const isAutomatic = !specificBets;
-    const betsToSync = (specificBets || bets.filter(b => b.status === 'pending' && !b.deleted && b.autoSync === true))
-      .filter(b => {
-        if (isAutomatic) {
-          if (b.autoSync !== true) return false;
-          const matchStart = safeNewDate(b.date).getTime();
-          const diff = now.getTime() - matchStart;
-          // Começa a sincronizar se estiver no horário (ou até 2 min antes) 
-          // e para após 105 minutos do início
-          return diff >= -120000 && diff < MATCH_TIMEOUT_MS;
-        }
-        return true; // Se for manual (specificBets), ignora filtros de tempo
-      })
-      .slice(0, 5);
-
-    if (betsToSync.length === 0) return;
-    
-    // Apenas os 3 primeiros para evitar Rate Limit na sincronização passiva
-    const limitedBets = betsToSync.slice(0, 3);
-
     setIsSyncingScores(true);
     try {
-      for (const bet of limitedBets) {
+      for (const bet of specificBets) {
         setSyncingBetId(bet.id);
         const result = await checkBetResult(bet.event, bet.market, bet.selection, bet.date);
         if (result.score) {
           await updateBetScore(bet.id, result.score, result.matchTime);
         }
         setSyncingBetId(null);
-        // Delay extra na sincronização automática
-        await new Promise(r => setTimeout(r, 3000));
+        // Delay extra para evitar Rate Limit
+        await new Promise(r => setTimeout(r, 2000));
       }
     } catch (error) {
       console.error("Erro na sincronização de placares:", error);
@@ -1758,17 +1772,6 @@ export default function App() {
       }
     } catch (error) {
       console.error("Erro ao atualizar status:", error);
-    }
-  };
-
-  const toggleAutoSync = async (id: string, current: boolean) => {
-    try {
-      await updateDoc(doc(db, 'bets', id), { 
-        autoSync: !current,
-        updatedAt: serverTimestamp()
-      });
-    } catch (error) {
-      console.error("Erro ao alternar auto-sync:", error);
     }
   };
 
@@ -2317,6 +2320,16 @@ export default function App() {
             Dashboard
           </button>
           <button 
+            onClick={() => setActiveTab('stake')}
+            className={cn(
+              "w-full flex items-center gap-3 px-2 py-1 text-sm font-bold uppercase tracking-wider transition-all",
+              activeTab === 'stake' ? "text-text-main" : "hover:text-text-main"
+            )}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Gestão de Stake
+          </button>
+          <button 
             onClick={() => setActiveTab('register')}
             className={cn(
               "w-full flex items-center gap-3 px-2 py-1 text-sm font-bold uppercase tracking-wider transition-all",
@@ -2550,7 +2563,7 @@ export default function App() {
       <main className="flex-1 overflow-y-auto bg-bg pb-20 lg:pb-0">
         <header className="hidden lg:flex h-24 bg-bg border-b border-border items-center justify-between px-10 sticky top-0 z-10">
           <h1 className="text-2xl font-black uppercase tracking-tighter">
-            {activeTab === 'dashboard' ? 'Dashboard' : activeTab === 'bets' ? 'Histórico de Apostas' : activeTab === 'trash' ? 'Lixeira (Arquivadas)' : activeTab === 'register' ? 'Registrar Aposta' : activeTab === 'insights' ? 'Insights com IA' : activeTab === 'transfers' ? 'Transferências e Unidades' : 'Gestão de Banca'}
+            {activeTab === 'dashboard' ? 'Dashboard' : activeTab === 'stake' ? 'Gestão de Stake' : activeTab === 'bets' ? 'Histórico de Apostas' : activeTab === 'trash' ? 'Lixeira (Arquivadas)' : activeTab === 'register' ? 'Registrar Aposta' : activeTab === 'insights' ? 'Insights com IA' : activeTab === 'transfers' ? 'Transferências e Unidades' : 'Gestão de Banca'}
           </h1>
           {activeTab !== 'register' && (
             <button 
@@ -2564,7 +2577,109 @@ export default function App() {
 
         <div className="p-4 md:p-10 max-w-7xl mx-auto min-h-[calc(100vh-6rem)]">
           <AnimatePresence mode="wait">
-            {activeTab === 'dashboard' && (
+            {activeTab === 'stake' && (
+            <motion.div 
+              key={`stake-${activeBankrollId}`}
+              variants={PAGE_VARIANTS}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={TRANSITIONS.smooth}
+              className="space-y-8"
+            >
+              {/* Seção de Sugestão de Stake */}
+              <div className="glass-card p-8 border-indigo-500/20 bg-indigo-500/[0.02] relative overflow-hidden">
+                 <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/5 blur-[80px] rounded-full translate-x-1/2 -translate-y-1/2" />
+                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+                    <div className="flex items-center gap-4">
+                       <div className="p-3 bg-indigo-500/20 rounded-2xl">
+                          <ShieldCheck className="w-6 h-6 text-indigo-400" />
+                       </div>
+                       <div>
+                          <h3 className="text-lg font-black uppercase tracking-tight">Sugestão de Stake</h3>
+                          <div className="flex gap-2 mt-2">
+                             <button 
+                               onClick={() => saveBankroll({ ...bankroll, stakeCalculationMode: 'initial' })}
+                               className={cn(
+                                   "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                                   (bankroll.stakeCalculationMode || 'initial') === 'initial'
+                                       ? "bg-indigo-500 text-bg shadow-lg shadow-indigo-500/20"
+                                       : "bg-surface text-text-dim border border-border hover:border-indigo-500/50"
+                               )}
+                             >
+                                Inicial (Base: {formatCurrency(bankroll.total)})
+                             </button>
+                             <button 
+                               onClick={() => saveBankroll({ ...bankroll, stakeCalculationMode: 'current' })}
+                               className={cn(
+                                   "px-3 py-1.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all",
+                                   bankroll.stakeCalculationMode === 'current'
+                                       ? "bg-indigo-500 text-bg shadow-lg shadow-indigo-500/20"
+                                       : "bg-surface text-text-dim border border-border hover:border-indigo-500/50"
+                               )}
+                             >
+                                Real (Base: {formatCurrency(allTimeStats.currentBalance)})
+                             </button>
+                          </div>
+                       </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                       <div className="p-4 bg-bg border border-border rounded-xl">
+                          <p className="text-[8px] font-black uppercase tracking-[0.2em] text-text-dim mb-2">Configuração Atual (Fixa)</p>
+                          <p className="text-xl font-black text-text-main">{formatCurrency(bankroll.unitSize)}</p>
+                          <p className="text-[9px] font-bold text-text-dim/60 uppercase tracking-tighter mt-1">
+                             {(bankroll.unitSize / (bankroll.stakeCalculationMode === 'current' ? allTimeStats.currentBalance : bankroll.total) * 100).toFixed(1)}% da {(bankroll.stakeCalculationMode === 'current' ? 'banca real' : 'banca inicial')}
+                          </p>
+                       </div>
+                       <div className="p-4 bg-bg border border-indigo-500/30 rounded-xl relative overflow-hidden group">
+                          <div className="absolute inset-0 bg-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <p className="text-[8px] font-black uppercase tracking-[0.2em] text-indigo-400 mb-2">Sugerida (Banca Atual)</p>
+                          <p className="text-xl font-black text-indigo-400">{formatCurrency(allTimeStats.currentBalance * 0.02)}</p>
+                          <p className="text-[9px] font-bold text-indigo-400/60 uppercase tracking-tighter mt-1">Manutenção: 2% do saldo real</p>
+                          <button 
+                            onClick={() => {
+                              const newVal = (allTimeStats.currentBalance * 0.02).toFixed(2);
+                              saveBankroll({ ...bankroll, unitSize: parseFloat(newVal) });
+                              setLocalUnit(newVal);
+                              showToast("Unidade atualizada com base na banca atual!", "success");
+                            }}
+                            className="absolute bottom-2 right-2 p-1.5 bg-indigo-500 text-bg rounded-lg opacity-0 group-hover:opacity-100 transition-all hover:scale-110"
+                             title="Aplicar esta sugestão"
+                           >
+                             <Check className="w-3 h-3" />
+                           </button>
+                        </div>
+                     </div>
+                 </div>
+
+                 <div className="mt-8 grid grid-cols-2 md:grid-cols-5 gap-4 relative z-10">
+                    {[0.001, 0.0025, 0.005, 0.0075, 0.01, 0.0125, 0.015, 0.0175, 0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05].map((pct) => {
+                       const baseValue = bankroll.stakeCalculationMode === 'current' ? allTimeStats.currentBalance : bankroll.total;
+                       const baseLabel = bankroll.stakeCalculationMode === 'current' ? 'Banca Real' : 'Banca Inicial';
+                       
+                       return (
+                        <button 
+                            key={pct}
+                            onClick={() => {
+                               const newVal = (baseValue * pct).toFixed(2);
+                               saveBankroll({ ...bankroll, unitSize: parseFloat(newVal) });
+                               setLocalUnit(newVal);
+                               showToast(`Unidade ajustada para ${(pct * 100).toFixed(2)}% da ${baseLabel.toLowerCase()}`, "success");
+                            }}
+                            className="p-4 bg-surface/50 border border-border rounded-xl hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all text-left group"
+                        >
+                            <p className="text-[8px] font-black uppercase tracking-widest text-text-dim group-hover:text-indigo-400 transition-colors">{(pct * 100).toFixed(2)}% da {baseLabel}</p>
+                            <p className="text-sm font-black text-text-main mt-1">{formatCurrency(baseValue * pct)}</p>
+                        </button>
+                       );
+                    })}
+                 </div>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'dashboard' && (
               <motion.div 
                 key={`dashboard-${activeBankrollId}`}
                 variants={PAGE_VARIANTS}
@@ -2698,6 +2813,97 @@ export default function App() {
                       <DollarSign className="w-5 h-5 text-indigo-500" />
                    </div>
                 </div>
+              </div>
+
+              {/* Sistema de Metas e Gestão de Gordura */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                 <div className="lg:col-span-2 glass-card p-6 border-white/5 bg-white/[0.02] relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-accent/5 blur-[80px] rounded-full translate-x-1/2 -translate-y-1/2" />
+                    <div className="flex items-center gap-3 mb-8 relative z-10">
+                       <div className="p-2 bg-accent/20 rounded-lg">
+                          <Target className="w-5 h-5 text-accent" />
+                       </div>
+                       <div>
+                          <h3 className="text-sm font-black uppercase tracking-tight">Metas de Performance</h3>
+                          <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider">Acompanhamento de Stop e Objetivos</p>
+                       </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 relative z-10">
+                       <div className="space-y-6">
+                          <h4 className="text-[9px] font-black uppercase tracking-widest text-text-dim border-b border-white/5 pb-2">Ciclo Diário</h4>
+                          <div className="space-y-5">
+                             <GoalProgressBar 
+                                label="Stop Green (Meta)" 
+                                current={goalStats.dayProfit} 
+                                target={bankroll.dailyStopGreen || 0} 
+                             />
+                             <GoalProgressBar 
+                                label="Stop Loss (Limite)" 
+                                current={goalStats.dayProfit} 
+                                target={-(bankroll.dailyStopLoss || 0)} 
+                                isLoss
+                             />
+                          </div>
+                       </div>
+                       <div className="space-y-6">
+                          <h4 className="text-[9px] font-black uppercase tracking-widest text-text-dim border-b border-white/5 pb-2">Objetivos Longo Prazo</h4>
+                          <div className="space-y-5">
+                             <GoalProgressBar 
+                                label="Meta Semanal" 
+                                current={goalStats.weekProfit} 
+                                target={bankroll.weeklyGoal || 0} 
+                             />
+                             <GoalProgressBar 
+                                label="Meta Mensal" 
+                                current={goalStats.monthProfit} 
+                                target={bankroll.monthlyGoal || 0} 
+                             />
+                          </div>
+                       </div>
+                    </div>
+                 </div>
+
+                 <div className="glass-card p-6 border-amber-500/20 bg-amber-500/[0.03] flex flex-col justify-between relative overflow-hidden">
+                    <div className="absolute bottom-0 right-0 w-32 h-32 bg-amber-500/10 blur-[50px] rounded-full translate-x-10 translate-y-10" />
+                    <div className="relative z-10">
+                       <div className="flex items-center gap-3 mb-6">
+                          <div className="p-2 bg-amber-500/20 rounded-lg">
+                             <Zap className="w-5 h-5 text-amber-500" />
+                          </div>
+                          <h3 className="text-sm font-black uppercase tracking-tight">Gordura (Excedente)</h3>
+                       </div>
+                       
+                       <div className="space-y-1 mb-8">
+                          <p className="text-[10px] font-black uppercase tracking-widest text-text-dim">Disponível para Alavancagem Hoje</p>
+                          <p className="text-4xl font-black text-amber-500 tracking-tighter">
+                             {formatCurrency(goalStats.dailyGordura)}
+                          </p>
+                          <p className="text-[9px] font-bold text-text-dim/60 uppercase tracking-tight">
+                             Lucro acima da meta diária ({formatCurrency(bankroll.dailyStopGreen || 0)})
+                          </p>
+                       </div>
+                    </div>
+
+                    <div className="relative z-10 p-4 bg-bg/40 rounded-xl border border-white/5">
+                       <div className="flex justify-between items-center mb-1">
+                          <span className="text-[9px] font-black uppercase tracking-widest text-text-dim">Status do Dia</span>
+                          <span className="text-[9px] font-black text-amber-500">
+                             {goalStats.dayProfit > (bankroll.dailyStopGreen || 0) ? 'META BATIDA +' : 'EM BUSCA DA META'}
+                          </span>
+                       </div>
+                       <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
+                          <motion.div 
+                            className="h-full bg-amber-500/50" 
+                            initial={{ width: 0 }}
+                            animate={{ width: `${Math.min(100, (goalStats.dayProfit / (bankroll.dailyStopGreen || 1)) * 100)}%` }}
+                          />
+                       </div>
+                       <p className="mt-3 text-[8px] leading-relaxed text-text-dim/80 font-bold uppercase tracking-wider">
+                          Todo valor que ultrapassa sua meta diária é considerado "gordura" para operações de maior risco ou alavancagem.
+                       </p>
+                    </div>
+                 </div>
               </div>
 
               {/* Chart Section */}
@@ -3619,7 +3825,8 @@ export default function App() {
                                            "bg-bg/90 backdrop-blur-xl border-2 transition-all duration-500 rounded-3xl overflow-hidden group relative mb-4 hover:scale-[1.005] hover:shadow-2xl hover:shadow-indigo-500/5",
                                            bet.status === 'won' || bet.status === 'half_win' ? "border border-accent shadow-[0_0_12px_rgba(0,255,149,0.15)] bg-accent/[0.01]" : 
                                            bet.status === 'lost' || bet.status === 'half_loss' ? "border border-loss shadow-[0_0_12px_rgba(255,62,62,0.15)] bg-loss/[0.01]" : 
-                                           bet.status === 'void' ? "border border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : "border border-border/60 bg-surface/40",
+                                           bet.status === 'void' ? "border border-refund shadow-[0_0_12px_rgba(255,184,0,0.15)] bg-refund/[0.01]" : 
+                                           bet.status === 'cashout' ? "border-amber-500 border-2 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/[0.02]" : "border border-border/60 bg-surface/40",
                                            bet.status !== 'pending' && "border",
                                            selectedBetIds.has(bet.id) ? "ring-2 ring-accent border-accent" : ""
                                         )}
@@ -3651,6 +3858,16 @@ export default function App() {
                                             <div>
                                               <div className="font-black text-text-main text-sm uppercase tracking-tight flex items-center gap-2">
                                                 {bet.market}
+                                                {(bet.bookmaker || 'Geral') && (
+                                                  <span className={cn(
+                                                    "inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[7px] font-black uppercase tracking-widest leading-none border shadow-sm shrink-0",
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').bg,
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').border,
+                                                    getBookmakerStyle(bet.bookmaker || 'Geral').color
+                                                  )}>
+                                                    {bet.bookmaker || 'Geral'}
+                                                  </span>
+                                                )}
                                                 <StatusBadge 
                                                   status={bet.status} 
                                                   isSyncing={bet.id === syncingBetId} 
@@ -3658,32 +3875,9 @@ export default function App() {
                                               </div>
                                               <div className="text-[10px] text-text-dim font-black uppercase mt-1 tracking-wider opacity-80 flex items-center gap-2 flex-wrap">
                                                 {format(safeNewDate(bet.date), "HH:mm")} 
-                                                {isMatchOngoing(bet.date) && bet.autoSync === true && (
-                                                  <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
-                                                    <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
-                                                    AO VIVO
-                                                  </span>
-                                                )}
                                                 • <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} />
                                                 {bet.league && <span className="opacity-60">• {bet.league}</span>}
                                                 {bet.betId && <span className="opacity-40 text-[8px]">• {bet.betId}</span>}
-                                                {(bet.bookmaker || 'Geral') && (
-                                                  <span className={cn(
-                                                    "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border transition-all hover:scale-105 shadow-xl",
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').bg,
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').border,
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').color,
-                                                    getBookmakerStyle(bet.bookmaker || 'Geral').glow
-                                                  )}>
-                                                    <div className={cn("w-2 h-2 rounded-full animate-pulse shadow-[0_0_8px_currentColor] bg-current")} />
-                                                    {bet.bookmaker || 'Geral'}
-                                                  </span>
-                                                )}
-
-                                                {/* Progress Bar Sincronia Automática */}
-                                                {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date) && bet.autoSync === true) && (
-                                                  <SyncProgressBar className="w-full max-w-[120px] h-0.5 mt-2" />
-                                                )}
                                               </div>
                                             </div>
                                           </div>
@@ -3720,20 +3914,6 @@ export default function App() {
                                         <td className="px-6 py-5 rounded-r-2xl text-right">
                                           <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
                                               <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
-                                                {/* Botão Auto Sync (Toggle) */}
-                                                {bet.status === 'pending' && (
-                                                  <button 
-                                                    onClick={() => toggleAutoSync(bet.id, !!bet.autoSync)}
-                                                    className={cn(
-                                                      "p-1.5 rounded-md transition-all border",
-                                                      bet.autoSync ? "bg-accent/20 border-accent/30 text-accent" : "bg-bg border-border text-text-dim hover:border-accent/30 hover:text-accent"
-                                                    )}
-                                                    title={bet.autoSync ? "Desativar Atualização Automática" : "Ativar Atualização Automática"}
-                                                  >
-                                                    <RefreshCw className={cn("w-3.5 h-3.5", bet.autoSync && "animate-spin-slow")} />
-                                                  </button>
-                                                )}
-                                                
                                                 {/* Botão Sincronizar Placar (Zap) */}
                                                 {bet.status === 'pending' && (
                                                   <button 
@@ -3743,7 +3923,7 @@ export default function App() {
                                                       "p-1.5 rounded-md transition-all hover:scale-110 border border-transparent",
                                                       (syncingBetId === bet.id && isSyncingScores) ? "animate-spin text-accent" : "text-accent/60 hover:text-accent hover:border-accent/20"
                                                     )}
-                                                    title="Placar Automático"
+                                                    title="Buscar Placar Real"
                                                   >
                                                     <Zap className="w-4 h-4" />
                                                   </button>
@@ -3889,7 +4069,8 @@ export default function App() {
                                     "bg-bg/90 backdrop-blur-2xl border-2 p-6 rounded-[32px] space-y-4 shadow-2xl transition-all duration-500 active:scale-[0.99] relative overflow-hidden mb-6",
                                     (bet.status === 'won' || bet.status === 'half_win') ? "border-accent border-4 shadow-[0_0_15px_rgba(0,255,149,0.2)] bg-accent/[0.01]" : 
                                     (bet.status === 'lost' || bet.status === 'half_loss') ? "border-loss border-4 shadow-[0_0_15px_rgba(255,62,62,0.2)] bg-loss/[0.01]" : 
-                                    bet.status === 'void' ? "border-refund border-4 shadow-[0_0_15px_rgba(255,184,0,0.2)] bg-refund/[0.01]" : "border-border/60 bg-surface/40",
+                                    bet.status === 'void' ? "border-refund border-4 shadow-[0_0_15px_rgba(255,184,0,0.2)] bg-refund/[0.01]" : 
+                                    bet.status === 'cashout' ? "border-amber-500 border-4 shadow-[0_0_15px_rgba(245,158,11,0.2)] bg-amber-500/[0.02]" : "border-border/60 bg-surface/40",
                                     selectedBetIds.has(bet.id) && "ring-2 ring-accent border-accent"
                                   )}
                                 >
@@ -3933,20 +4114,6 @@ export default function App() {
                                           <p className="text-[11px] font-bold text-text-dim uppercase opacity-60 leading-tight">
                                             <RenderEventWithScore event={bet.event} score={bet.score} matchTime={bet.matchTime} mobile />
                                           </p>
-                                          
-                                          {isMatchOngoing(bet.date) && bet.autoSync === true && (
-                                            <div className="pt-1">
-                                              <span className="flex items-center gap-1.5 px-2 py-0.5 bg-accent text-bg rounded-md text-[8px] font-black animate-[pulse_1.5s_ease-in-out_infinite] shadow-[0_0_12px_rgba(34,197,94,0.5)] border border-accent/20">
-                                                <div className="w-1.5 h-1.5 rounded-full bg-bg shadow-sm" />
-                                                AO VIVO
-                                              </span>
-                                            </div>
-                                          )}
-                                         
-                                         {/* Progress Bar Sincronia Automática Mobile */}
-                                          {(bet.status === 'pending' && !bet.deleted && isMatchOngoing(bet.date) && bet.autoSync === true) && (
-                                            <SyncProgressBar className="w-full h-1 mt-3" />
-                                          )}
                                         {(bet.league || bet.betId) && (
                                           <div className="flex items-center gap-3">
                                             {bet.league && <span className="text-[9px] font-black text-text-dim/60 uppercase tracking-widest">Liga: {bet.league}</span>}
@@ -3986,26 +4153,7 @@ export default function App() {
                                           {/* requested discreet bar with 3 main functions */}
                                           <div className="bg-bg/60 backdrop-blur-2xl rounded-xl md:rounded-2xl p-1 flex items-center justify-between border border-white/5 shadow-xl">
                                              <div className="flex items-center gap-1 focus-within:ring-0 overflow-x-auto no-scrollbar">
-                                               {/* 1. Ativar Placar Automático */}
-                                               <button 
-                                                 onClick={(e) => { e.stopPropagation(); toggleAutoSync(bet.id, !!bet.autoSync); }}
-                                                 className={cn(
-                                                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95 group",
-                                                   bet.autoSync 
-                                                     ? "bg-accent border-accent text-bg shadow-[0_0_15px_-2px_rgba(34,197,94,0.5)]" 
-                                                     : "bg-surface/40 border-white/5 text-text-dim hover:text-accent hover:border-accent/30"
-                                                 )}
-                                                 title="Ativar Placar Automático"
-                                               >
-                                                 <div className="relative">
-                                                    <RefreshCw className={cn("w-4 h-4 transition-transform duration-500", bet.autoSync && "animate-spin-slow")} />
-                                                    {bet.autoSync && (
-                                                      <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-white rounded-full animate-pulse shadow-sm" />
-                                                    )}
-                                                 </div>
-                                               </button>
-
-                                               {/* 2. Atualizar Placar */}
+                                               {/* 1. Atualizar Placar */}
                                                <button 
                                                  onClick={(e) => { e.stopPropagation(); syncOnlyScores([bet]); }}
                                                  disabled={isSyncingScores || isSyncingResults}
@@ -4015,7 +4163,7 @@ export default function App() {
                                                      ? "bg-blue-500 border-blue-500 text-white animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.4)]" 
                                                      : "bg-blue-500/10 border-blue-500/20 text-blue-400 shadow-sm hover:bg-blue-500/20 hover:scale-105"
                                                  )}
-                                                 title="Atualizar Placar"
+                                                 title="Buscar Placar Real"
                                                >
                                                  {syncingBetId === bet.id && isSyncingScores ? (
                                                    <Loader2 className="w-4 h-4 animate-spin" />
@@ -4257,6 +4405,8 @@ export default function App() {
                     )}
                  </div>
               </div>
+
+
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                 {/* Form Column */}
@@ -4781,6 +4931,37 @@ export default function App() {
                             <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mt-2">Recomendado entre 1% a 3% da banca total.</p>
                         </div>
 
+                        <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Modo de Sugestão de Stake</label>
+                            <div className="grid grid-cols-2 gap-2">
+                                <button 
+                                    onClick={() => setLocalStakeCalculationMode('initial')}
+                                    className={cn(
+                                        "py-3 px-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                                        (localStakeCalculationMode || bankroll.stakeCalculationMode || 'initial') === 'initial'
+                                            ? "bg-accent text-bg border-accent shadow-lg shadow-accent/20"
+                                            : "bg-surface text-text-dim border-border hover:border-text-dim"
+                                    )}
+                                >
+                                    Banca Inicial
+                                </button>
+                                <button 
+                                    onClick={() => setLocalStakeCalculationMode('current')}
+                                    className={cn(
+                                        "py-3 px-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border",
+                                        (localStakeCalculationMode === 'current' || (!localStakeCalculationMode && bankroll.stakeCalculationMode === 'current'))
+                                            ? "bg-accent text-bg border-accent shadow-lg shadow-accent/20"
+                                            : "bg-surface text-text-dim border-border hover:border-text-dim"
+                                    )}
+                                >
+                                    Banca Atual
+                                </button>
+                            </div>
+                            <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mt-2">
+                                Define qual base de cálculo você prefere ver como referência principal para suas unidades.
+                            </p>
+                        </div>
+
                         <div className="pt-4 grid grid-cols-2 gap-4">
                             <div className="bg-surface p-4 rounded-lg border border-border border-dashed">
                                 <p className="text-[10px] uppercase font-black text-text-dim mb-1 tracking-widest">Total de Unidades</p>
@@ -4791,6 +4972,106 @@ export default function App() {
                                 <p className="text-2xl font-black text-accent">{((bankroll.unitSize / bankroll.total) * 100).toFixed(1)}%</p>
                             </div>
                         </div>
+                    </div>
+                </div>
+
+                <div className="glass-card p-6 border-indigo-500/20 shadow-[0_0_40px_rgba(99,102,241,0.05)]">
+                    <div className="flex items-center gap-3 mb-6">
+                        <div className="p-2 bg-indigo-500/10 rounded-lg">
+                            <Target className="w-5 h-5 text-indigo-400" />
+                        </div>
+                        <div>
+                            <h3 className="text-lg font-black uppercase tracking-tighter">Metas e Gestão</h3>
+                            <p className="text-[10px] font-bold text-text-dim uppercase tracking-wider">Defina seus limites de parada e objetivos</p>
+                        </div>
+                    </div>
+
+                    <div className="space-y-6">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Stop Green (Meta Diária)</label>
+                                <div className="relative">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm leading-none">R$</span>
+                                    <input 
+                                        type="text" 
+                                        inputMode="decimal"
+                                        placeholder={bankroll.dailyStopGreen?.toString() || "0.00"}
+                                        value={localStopGreen}
+                                        onChange={(e) => setLocalStopGreen(e.target.value)}
+                                        className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Stop Loss (Limite Diário)</label>
+                                <div className="relative">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm leading-none">R$</span>
+                                    <input 
+                                        type="text" 
+                                        inputMode="decimal"
+                                        placeholder={bankroll.dailyStopLoss?.toString() || "0.00"}
+                                        value={localStopLoss}
+                                        onChange={(e) => setLocalStopLoss(e.target.value)}
+                                        className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors border-loss/20 focus:border-loss"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Meta Semanal</label>
+                                <div className="relative">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm leading-none">R$</span>
+                                    <input 
+                                        type="text" 
+                                        inputMode="decimal"
+                                        placeholder={bankroll.weeklyGoal?.toString() || "0.00"}
+                                        value={localWeeklyGoal}
+                                        onChange={(e) => setLocalWeeklyGoal(e.target.value)}
+                                        className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                    />
+                                </div>
+                            </div>
+                            <div>
+                                <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Meta Mensal</label>
+                                <div className="relative">
+                                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm leading-none">R$</span>
+                                    <input 
+                                        type="text" 
+                                        inputMode="decimal"
+                                        placeholder={bankroll.monthlyGoal?.toString() || "0.00"}
+                                        value={localMonthlyGoal}
+                                        onChange={(e) => setLocalMonthlyGoal(e.target.value)}
+                                        className="w-full pl-12 pr-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-[10px] font-black uppercase tracking-widest text-text-dim mb-2">Gordura para Operar (%)</label>
+                            <div className="relative">
+                                <input 
+                                    type="text" 
+                                    inputMode="decimal"
+                                    placeholder={bankroll.workingCapitalPct?.toString() || "0"}
+                                    value={localWorkingCapital}
+                                    onChange={(e) => setLocalWorkingCapital(e.target.value)}
+                                    className="w-full px-4 py-3 bg-bg border border-border rounded-lg focus:outline-none focus:border-accent text-text-main font-black text-lg transition-colors"
+                                />
+                                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-text-dim font-bold text-sm">% do Lucro</span>
+                            </div>
+                            <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider mt-2">Corresponde a quanto do seu lucro você aceita arriscar para alavancar ("gordura").</p>
+                        </div>
+
+                        <button 
+                            onClick={saveLocalSettings}
+                            className="w-full bg-accent text-bg py-3 rounded-xl font-black uppercase text-[10px] tracking-widest hover:scale-[1.02] active:scale-[0.98] transition-all shadow-lg shadow-accent/20 flex items-center justify-center gap-2"
+                        >
+                            <Save className="w-3.5 h-3.5" />
+                            Atualizar Metas e Gestão
+                        </button>
                     </div>
                 </div>
 
@@ -6357,11 +6638,11 @@ function StatusBadge({ status, isSyncing }: { status: Bet['status'], isSyncing?:
     },
     cashout: { 
       label: 'CASH OUT', 
-      bg: 'bg-amber-500/15',
+      bg: 'bg-amber-500/20',
       text: 'text-amber-500',
-      border: 'border-amber-500/30',
-      shadow: 'shadow-[0_0_15px_rgba(245,158,11,0.08)]',
-      dotColor: 'bg-amber-500 shadow-[0_0_6px_currentColor]'
+      border: 'border-amber-500/40',
+      shadow: 'shadow-[0_0_20px_rgba(245,158,11,0.15)]',
+      dotColor: 'bg-amber-500 shadow-[0_0_8px_currentColor] animate-pulse'
     },
   }
   

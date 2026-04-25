@@ -46,6 +46,12 @@
         "total": { "type": "number" },
         "unitSize": { "type": "number" },
         "userId": { "type": "string" },
+        "dailyStopLoss": { "type": "number" },
+        "dailyStopGreen": { "type": "number" },
+        "weeklyGoal": { "type": "number" },
+        "monthlyGoal": { "type": "number" },
+        "workingCapitalPct": { "type": "number" },
+        "stakeCalculationMode": { "type": "string", "enum": ["initial", "current"] },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },

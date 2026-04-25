@@ -147,32 +147,25 @@ export async function checkBetResult(
         contents: [{ parts: [{ text: prompt }] }],
         config: {
           tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              status: { 
-                type: Type.STRING, 
-                enum: ['won', 'lost', 'void', 'pending'],
-              },
-              reason: { 
-                type: Type.STRING, 
-              },
-              score: {
-                type: Type.STRING,
-                description: "Placar atual ou final (ex: '2-1')"
-              },
-              matchTime: {
-                type: Type.STRING,
-                description: "Minuto e período do jogo (ex: '45 (1T)', 'FT')"
-              }
-            },
-            required: ["status", "reason"],
-          },
         },
       });
 
-      return JSON.parse(response.text || "{}") as BetOutcome;
+      const text = response.text || "{}";
+      // Manually extract JSON if it's wrapped in markdown code blocks
+      const jsonMatch = text.match(/```json\s?([\s\S]*?)```/) || text.match(/{([\s\S]*)}/);
+      const jsonString = jsonMatch ? (jsonMatch[0].includes('```json') ? jsonMatch[1] : jsonMatch[0]) : text;
+      
+      try {
+        return JSON.parse(jsonString) as BetOutcome;
+      } catch (e) {
+        console.error("Erro ao parsear JSON do resultado:", text);
+        // Fallback parsing if JSON is malformed
+        return { 
+          status: 'pending', 
+          reason: "IA retornou formato inválido",
+          score: text.length < 50 ? text : undefined 
+        };
+      }
     } catch (error: any) {
       const errorMsg = error.message || "";
       const isQuota = /429|quota|limite|limit/i.test(errorMsg);
