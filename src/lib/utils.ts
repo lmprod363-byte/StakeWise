@@ -1,8 +1,13 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { BOOKMAKER_CONFIGS } from '../constants';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+export function getBookmakerStyle(name: string = 'Outra') {
+  return BOOKMAKER_CONFIGS[name] || BOOKMAKER_CONFIGS['Outra'];
 }
 
 export function formatCurrency(value: number) {
@@ -53,6 +58,17 @@ export function safeNewDate(dateVal?: any): Date {
   if (!dateVal) return new Date();
   const d = new Date(dateVal);
   return isNaN(d.getTime()) ? new Date() : d;
+}
+
+export function isMatchOngoing(date: string) {
+  const start = safeNewDate(date).getTime();
+  const now = Date.now();
+  return start <= now && (now - start) < (105 * 60 * 1000); // 105 min timeout
+}
+
+export function getBookmakerLogo(name: string) {
+  // Retorna a primeira letra da casa estilizada
+  return name.charAt(0).toUpperCase();
 }
 
 export function safeFormat(dateVal: any, formatStr: string, options?: any): string {

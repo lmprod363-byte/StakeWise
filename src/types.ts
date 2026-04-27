@@ -50,6 +50,13 @@ export interface Stats {
   profitPercentage: number;
 }
 
+export interface AllTimeStats {
+  totalProfit: number;
+  pendingCount: number;
+  pendingStake: number;
+  currentBalance: number;
+}
+
 export interface BankrollStats extends Stats {
   yield: number;
 }
