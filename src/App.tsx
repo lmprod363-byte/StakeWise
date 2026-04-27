@@ -149,15 +149,14 @@ export default function App() {
   const [bankrollsLoading, setBankrollsLoading] = useState(true);
 
   const bankroll = useMemo(() => {
-    return bankrolls.find(b => b.id === activeBankrollId) || bankrolls[0] || { id: 'default', name: 'Principal', total: 1000, unitSize: 20, userId: '', createdAt: null };
+    const found = bankrolls.find(b => b.id === activeBankrollId);
+    if (found) return found;
+    if (bankrolls.length > 0) return bankrolls[0];
+    return { id: 'default', name: 'Principal', total: 1000, unitSize: 20, userId: '', createdAt: null } as Bankroll;
   }, [bankrolls, activeBankrollId]);
 
-  useEffect(() => {
-    if (bankroll.id !== 'default' && bankroll.id !== activeBankrollId) {
-      setActiveBankrollId(bankroll.id);
-      localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', bankroll.id);
-    }
-  }, [bankroll.id, activeBankrollId]);
+  // Remover o useEffect instável que forçava activeBankrollId = bankroll.id
+  // Isso evitava mudanças se o banco escolhido não estivesse carregado no momento exato.
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash' | 'transfers' | 'stake'>('dashboard');
   const [viewAllBankrolls, setViewAllBankrolls] = useState(false);
@@ -193,9 +192,7 @@ export default function App() {
   const [showAllPercentages, setShowAllPercentages] = useState(false);
   const [manualAiKey, setManualAiKey] = useState(localStorage.getItem('STAKEWISE_CUSTOM_GEMINI_KEY') || '');
   const [isAddingBankroll, setIsAddingBankroll] = useState(false);
-  const [newBankrollName, setNewBankrollName] = useState('');
-  const [newBankrollTotal, setNewBankrollTotal] = useState('1000');
-  const [newBankrollUnit, setNewBankrollUnit] = useState('20');
+
   const [localTotal, setLocalTotal] = useState('');
   const [localUnit, setLocalUnit] = useState('');
   const [localStopLoss, setLocalStopLoss] = useState('');
@@ -405,6 +402,9 @@ export default function App() {
           localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', targetId);
         }
       }
+      setBankrollsLoading(false);
+    }, (error) => {
+      console.error("Erro ao escutar bancas:", error);
       setBankrollsLoading(false);
     });
 
@@ -2033,7 +2033,7 @@ export default function App() {
     }
   };
 
-  if (authLoading) {
+  if (authLoading || bankrollsLoading) {
     return <LoadingScreen />;
   }
 
@@ -2229,12 +2229,6 @@ export default function App() {
         isOpen={isAddingBankroll}
         onClose={() => setIsAddingBankroll(false)}
         addBankroll={addBankroll}
-        newBankrollName={newBankrollName}
-        setNewBankrollName={setNewBankrollName}
-        newBankrollTotal={newBankrollTotal}
-        setNewBankrollTotal={setNewBankrollTotal}
-        newBankrollUnit={newBankrollUnit}
-        setNewBankrollUnit={setNewBankrollUnit}
       />
 
       <DeleteBetModal 

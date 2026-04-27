@@ -79,6 +79,10 @@ export function AppShell({
         balanceDelta={balanceDelta}
         currentBalance={allTimeStats.currentBalance}
         setActiveTab={setActiveTab}
+        bookmakerBalances={bookmakerBalances}
+        getBookmakerStyle={getBookmakerStyle}
+        setAdjustingBookmaker={setAdjustingBookmaker}
+        setAdjustmentValue={setAdjustmentValue}
       />
 
       <main className="flex-1 overflow-y-auto bg-bg pb-20 lg:pb-0">
@@ -103,6 +107,7 @@ export function AppShell({
         isOpen={isMobileMenuOpen}
         onClose={() => setIsMobileMenuOpen(false)}
         setActiveTab={setActiveTab}
+        activeTab={activeTab}
       />
 
       <ToastNotificationSystem successToast={successToast} />

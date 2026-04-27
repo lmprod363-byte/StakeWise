@@ -2,7 +2,7 @@ import React, { memo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   RefreshCw, Loader2, Play, History, BarChart3, 
-  TrendingUp, Target, Clock, DollarSign, Zap 
+  TrendingUp, Target, Clock, DollarSign, Zap, BookOpen, X
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, ReferenceLine, Tooltip } from 'recharts';
@@ -118,6 +118,8 @@ export function Dashboard({
   variants,
   transitions
 }: DashboardProps) {
+  const [showBookmakerModal, setShowBookmakerModal] = React.useState(false);
+
   if (!bankroll) return null;
 
   return (
@@ -210,8 +212,14 @@ export function Dashboard({
 
       {/* Bookmaker Exposure (Mobile friendly) */}
       {bookmakerExposure.length > 0 && (
-        <div className="glass-card p-6 border-border bg-surface/30">
-          <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim mb-4">Investido por Casa de Aposta</h3>
+        <div 
+          className="glass-card p-6 border-border bg-surface/30 cursor-pointer active:scale-[0.98] transition-transform"
+          onClick={() => setShowBookmakerModal(true)}
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-text-dim">Investido por Casa de Aposta</h3>
+            <span className="text-[9px] font-black uppercase tracking-widest text-accent bg-accent/10 px-2 py-0.5 rounded-full block sm:hidden">Toque para ver</span>
+          </div>
           <div className="flex flex-wrap gap-3">
             {bookmakerExposure.map(([bm, amount]) => {
                 const style = getBookmakerStyle(bm);
@@ -225,6 +233,86 @@ export function Dashboard({
           </div>
         </div>
       )}
+
+      {/* Bookmaker Exposure Modal (Mobile) */}
+      <AnimatePresence>
+        {showBookmakerModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[9999] flex items-end sm:items-center justify-center p-4"
+            onClick={() => setShowBookmakerModal(false)}
+          >
+            <motion.div
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              className="bg-bg border border-border w-full max-w-sm rounded-[32px] overflow-hidden shadow-2xl"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="p-6 border-b border-border flex items-center justify-between bg-surface/50">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-accent/20 rounded-lg">
+                    <BookOpen className="w-5 h-5 text-accent" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black uppercase tracking-tight">Investimento Detalhado</h3>
+                    <p className="text-[10px] text-text-dim font-bold uppercase tracking-wider">Por Casa de Aposta</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setShowBookmakerModal(false)}
+                  className="p-2 hover:bg-white/5 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5 text-text-dim" />
+                </button>
+              </div>
+              
+              <div className="p-6 space-y-3 max-h-[60vh] overflow-y-auto no-scrollbar">
+                {bookmakerExposure.map(([bm, amount]) => {
+                  const style = getBookmakerStyle(bm);
+                  return (
+                    <div 
+                      key={`modal-exposure-${bm}`} 
+                      className={cn("flex items-center justify-between p-4 rounded-2xl border backdrop-blur-md", style.bg, style.border)}
+                    >
+                      <div className="flex flex-col">
+                        <span className={cn("text-[10px] font-black uppercase tracking-[0.2em] mb-0.5", style.color)}>{bm}</span>
+                        <div className="flex items-center gap-2">
+                           <div className="w-1.5 h-1.5 rounded-full bg-current opacity-40 animate-pulse" />
+                           <span className="text-[8px] font-black uppercase tracking-widest text-text-dim/60">Posições Abertas</span>
+                        </div>
+                      </div>
+                      <span className={cn("text-xl font-black tabular-nums tracking-tighter", style.color)}>
+                        {formatCurrency(amount)}
+                      </span>
+                    </div>
+                  );
+                })}
+                
+                <div className="bg-surface/30 p-4 rounded-2xl border border-border mt-4">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-text-dim">Total Pendente</span>
+                    <span className="text-lg font-black tracking-tighter text-text-main">
+                      {formatCurrency(allTimeStats.pendingStake)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-6 pt-0 pb-10 sm:pb-6">
+                <button
+                  onClick={() => setShowBookmakerModal(false)}
+                  className="w-full py-4 bg-surface border border-border text-text-main rounded-2xl text-xs font-black uppercase tracking-[0.2em] active:scale-95 transition-all"
+                >
+                  Fechar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Pending Bets Summary */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

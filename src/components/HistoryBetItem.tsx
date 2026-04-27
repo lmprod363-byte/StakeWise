@@ -157,41 +157,41 @@ export const HistoryBetRow = memo(({
         </div>
       </td>
       <td className="px-6 py-5 rounded-r-2xl text-right">
-        <div className="flex items-center justify-end gap-1 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
-            <div className="flex items-center gap-1 bg-surface/80 p-1 rounded-lg border border-border/50 backdrop-blur-sm shadow-xl">
-              {bet.status === 'pending' && (
+        <div className="flex items-center justify-end gap-1.5 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-all transform translate-x-2 group-hover:translate-x-0">
+            {/* Grupo de Sincronização */}
+            <div className="flex items-center gap-0.5 bg-blue-500/5 p-0.5 rounded-xl border border-blue-500/10 backdrop-blur-sm">
                 <button 
                   onClick={() => onSyncOnlyScores([bet])}
                   disabled={isSyncingScores || isSyncingResults}
                   className={cn(
-                    "p-1.5 rounded-md transition-all hover:scale-110 border border-transparent",
-                    (syncingBetId === bet.id && isSyncingScores) ? "animate-spin text-accent" : "text-accent/60 hover:text-accent hover:border-accent/20"
+                    "p-1.5 rounded-lg transition-all hover:scale-110",
+                    (syncingBetId === bet.id && isSyncingScores) ? "bg-blue-500 text-white" : "text-blue-400 hover:bg-blue-500/10"
                   )}
                   title="Buscar Placar Real"
                 >
                   <Zap className="w-4 h-4" />
                 </button>
-              )}
               
-              <button 
-                onClick={() => onSyncResults([bet], true)}
-                disabled={isSyncingResults || isSyncingScores}
-                className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  (syncingBetId === bet.id && isSyncingResults) ? "animate-spin text-accent" : "text-text-dim hover:text-accent"
-                )}
-                title="Conferir Resultado Final"
-              >
-                <RefreshCw className="w-4 h-4" />
-              </button>
-              
-              <div className="w-px h-4 bg-border/40 mx-1" />
-              
+                <button 
+                  onClick={() => onSyncResults([bet], true)}
+                  disabled={isSyncingResults || isSyncingScores}
+                  className={cn(
+                    "p-1.5 rounded-lg transition-all hover:scale-110",
+                    (syncingBetId === bet.id && isSyncingResults) ? "bg-purple-500 text-white" : "text-purple-400 hover:bg-purple-500/10"
+                  )}
+                  title="Conferir Resultado Final"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+            </div>
+
+            {/* Grupo de Status */}
+            <div className="flex items-center gap-0.5 bg-surface/50 p-0.5 rounded-xl border border-border/40 backdrop-blur-sm shadow-lg">
               <button 
                 onClick={() => onUpdateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won')}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'won' ? "bg-accent text-bg" : "text-text-dim hover:text-accent hover:bg-accent/10"
                 )}
                 title="Ganha"
               >
@@ -200,18 +200,18 @@ export const HistoryBetRow = memo(({
               <button 
                 onClick={() => onUpdateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win')}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'half_win' ? "bg-accent text-bg" : "text-text-dim hover:text-accent hover:bg-accent/10"
                 )}
                 title="Meio Green"
               >
-                <div className="text-[9px] font-black">½G</div>
+                <div className="text-[9px] font-black w-4 h-4 flex items-center justify-center">½G</div>
               </button>
               <button 
                 onClick={() => onUpdateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost')}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'lost' ? "bg-loss text-white" : "text-text-dim hover:text-loss hover:bg-loss/10"
                 )}
                 title="Perdida"
               >
@@ -220,43 +220,47 @@ export const HistoryBetRow = memo(({
               <button 
                 onClick={() => onUpdateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss')}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'half_loss' ? "bg-loss text-white" : "text-text-dim hover:text-loss hover:bg-loss/10"
                 )}
                 title="Meio Red"
               >
-                <div className="text-[9px] font-black">½R</div>
+                <div className="text-[9px] font-black w-4 h-4 flex items-center justify-center">½R</div>
               </button>
               <button 
                 onClick={() => onUpdateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void')}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'void' ? "bg-refund text-white" : "text-text-dim hover:text-refund hover:bg-refund/10"
                 )}
                 title="Reembolsada"
               >
-                <HelpCircle className="w-4 h-4" />
+                <RotateCcw className="w-4 h-4" />
               </button>
               <button 
                 onClick={() => onCashout(bet)}
                 className={cn(
-                  "p-1.5 rounded-md transition-all hover:scale-110",
-                  bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500"
+                  "p-1.5 rounded-lg transition-all hover:scale-110",
+                  bet.status === 'cashout' ? "bg-amber-500 text-bg" : "text-text-dim hover:text-amber-500 hover:bg-amber-500/10"
                 )}
                 title="Encerrar"
               >
                 <DollarSign className="w-4 h-4" />
               </button>
+            </div>
+
+            {/* Grupo de Ações */}
+            <div className="flex items-center gap-0.5 bg-surface/30 p-0.5 rounded-xl border border-white/5 shadow-sm">
               <button 
                 onClick={() => onEdit(bet)}
-                className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/5 rounded-md transition-all"
+                className="p-1.5 text-text-dim hover:text-accent hover:bg-accent/10 rounded-lg transition-all"
                 title="Editar"
               >
-                <Settings2 className="w-4 h-4" />
+                <Pencil className="w-4 h-4" />
               </button>
               <button 
                 onClick={() => onDelete(bet.id)}
-                className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/5 rounded-md transition-all"
+                className="p-1.5 text-text-dim hover:text-loss hover:bg-loss/10 rounded-lg transition-all"
                 title="Mover para Lixeira"
               >
                 <Trash2 className="w-4 h-4" />
@@ -375,98 +379,113 @@ export const HistoryBetCard = memo(({
             )}
           </div>
        </div>
+       <div className="pt-4 space-y-2.5">
+          {/* Sincronização Mobile */}
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={(e) => { e.stopPropagation(); onSyncOnlyScores([bet]); }}
+              disabled={isSyncingScores || isSyncingResults}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 p-2.5 rounded-xl transition-all border outline-none active:scale-95",
+                (syncingBetId === bet.id && isSyncingScores)
+                  ? "bg-blue-500 border-blue-500 text-white shadow-lg shadow-blue-500/20" 
+                  : "bg-blue-500/10 border-blue-500/20 text-blue-400 hover:bg-blue-500/20"
+              )}
+            >
+              {syncingBetId === bet.id && isSyncingScores ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+              <span className="text-[9px] font-black uppercase tracking-widest">Placar</span>
+            </button>
 
-       <div className="mt-8 space-y-3">
-          <div className="bg-bg/60 backdrop-blur-2xl rounded-xl md:rounded-2xl p-1 flex items-center justify-between border border-white/5 shadow-xl">
-             <div className="flex items-center gap-1 focus-within:ring-0 overflow-x-auto no-scrollbar">
-               <button 
-                 onClick={(e) => { e.stopPropagation(); onSyncOnlyScores([bet]); }}
-                 disabled={isSyncingScores || isSyncingResults}
-                 className={cn(
-                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
-                   (syncingBetId === bet.id && isSyncingScores)
-                     ? "bg-blue-500 border-blue-500 text-white animate-pulse shadow-[0_0_10px_rgba(59,130,246,0.4)]" 
-                     : "bg-blue-500/10 border-blue-500/20 text-blue-400 shadow-sm hover:bg-blue-500/20 hover:scale-105"
-                 )}
-                 title="Buscar Placar Real"
-               >
-                 {syncingBetId === bet.id && isSyncingScores ? (
-                   <Loader2 className="w-4 h-4 animate-spin" />
-                 ) : (
-                   <Zap className="w-4 h-4" />
-                 )}
-               </button>
+            <button 
+              onClick={(e) => { e.stopPropagation(); onSyncResults([bet], true); }}
+              disabled={isSyncingResults || isSyncingScores}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-2 p-2.5 rounded-xl transition-all border outline-none active:scale-95",
+                (syncingBetId === bet.id && isSyncingResults)
+                  ? "bg-purple-500 border-purple-500 text-white shadow-lg shadow-purple-500/20" 
+                  : "bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20"
+              )}
+            >
+              {syncingBetId === bet.id && isSyncingResults ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              <span className="text-[9px] font-black uppercase tracking-widest">Status</span>
+            </button>
+          </div>
 
-               <button 
-                 onClick={(e) => { e.stopPropagation(); onSyncResults([bet], true); }}
-                 disabled={isSyncingResults || isSyncingScores}
-                 className={cn(
-                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
-                   (syncingBetId === bet.id && isSyncingResults)
-                     ? "bg-purple-500 border-purple-500 text-white shadow-[0_0_10px_rgba(168,85,247,0.4)]" 
-                     : "bg-purple-500/10 border-purple-500/20 text-purple-400 hover:bg-purple-500/20 hover:scale-105"
-                 )}
-                 title="Atualizar status da aposta"
-               >
-                 {syncingBetId === bet.id && isSyncingResults ? (
-                   <Loader2 className="w-4 h-4 animate-spin" />
-                 ) : (
-                   <RefreshCw className="w-4 h-4" />
-                 )}
-               </button>
-               
-               <div className="w-px h-6 bg-border/20 mx-1 shrink-0" />
-
+          <div className="bg-surface/30 backdrop-blur-md rounded-xl p-1 flex items-center border border-white/5 shadow-xl">
+             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar w-full px-0.5">
                <button 
                  onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'won' ? 'pending' : 'won'); }}
                  className={cn(
-                   "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
-                   bet.status === 'won' 
-                     ? "bg-accent border-accent text-bg shadow-[0_0_10px_rgba(0,255,149,0.4)]" 
-                     : "bg-accent/10 border-accent/20 text-accent hover:bg-accent/20"
+                   "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                   bet.status === 'won' ? "bg-accent border-accent text-bg shadow-lg shadow-accent/20" : "bg-accent/10 border-accent/20 text-accent hover:bg-accent/20"
                  )}
-                 title="Green"
                >
-                 <CheckCircle2 className="w-4 h-4" />
+                 <CheckCircle2 className="w-3.5 h-3.5" />
                </button>
+
+               <button 
+                 onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'half_win' ? 'pending' : 'half_win'); }}
+                 className={cn(
+                   "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                   bet.status === 'half_win' ? "bg-accent border-accent text-bg shadow-lg shadow-accent/20" : "bg-accent/10 border-accent/20 text-accent hover:bg-accent/20"
+                 )}
+               >
+                 <div className="text-[8px] font-black leading-none">½G</div>
+               </button>
+
                <button 
                   onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'lost' ? 'pending' : 'lost'); }}
                   className={cn(
-                    "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
-                    bet.status === 'lost' 
-                      ? "bg-loss border-loss text-white shadow-[0_0_10px_rgba(239,68,68,0.4)]" 
-                      : "bg-loss/10 border-loss/20 text-loss hover:bg-loss/20"
+                    "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                    bet.status === 'lost' ? "bg-loss border-loss text-white shadow-lg shadow-loss/20" : "bg-loss/10 border-loss/20 text-loss hover:bg-loss/20"
                   )}
-                  title="Red"
                >
-                 <XCircle className="w-4 h-4" />
+                 <XCircle className="w-3.5 h-3.5" />
                </button>
+
+               <button 
+                 onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'half_loss' ? 'pending' : 'half_loss'); }}
+                 className={cn(
+                   "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                   bet.status === 'half_loss' ? "bg-loss border-loss text-white shadow-lg shadow-loss/20" : "bg-loss/10 border-loss/20 text-loss hover:bg-loss/20"
+                 )}
+               >
+                 <div className="text-[8px] font-black leading-none">½R</div>
+               </button>
+
                <button 
                   onClick={(e) => { e.stopPropagation(); onUpdateStatus(bet.id, bet.status === 'void' ? 'pending' : 'void'); }}
                   className={cn(
-                    "p-2 md:p-2.5 rounded-lg md:rounded-xl transition-all border shrink-0 outline-none active:scale-95",
-                    bet.status === 'void' 
-                      ? "bg-refund border-refund text-white shadow-[0_0_10px_rgba(255,184,0,0.4)]" 
-                      : "bg-refund/10 border-refund/20 text-refund hover:bg-refund/20"
+                    "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                    bet.status === 'void' ? "bg-refund border-refund text-white shadow-lg shadow-refund/20" : "bg-refund/10 border-refund/20 text-refund hover:bg-refund/20"
                   )}
-                  title="Reembolso"
                >
-                 <RotateCcw className="w-4 h-4" />
+                 <RotateCcw className="w-3.5 h-3.5" />
                </button>
-             </div>
 
-             <div className="flex items-center gap-1.5 ml-2 pr-2">
+               <button 
+                 onClick={(e) => { e.stopPropagation(); onCashout(bet); }}
+                 className={cn(
+                   "p-1.5 rounded-lg transition-all border shrink-0 outline-none active:scale-95",
+                   bet.status === 'cashout' ? "bg-amber-500 border-amber-500 text-bg shadow-lg shadow-amber-500/20" : "bg-amber-500/10 border-amber-500/20 text-amber-500 hover:bg-amber-500/20"
+                 )}
+               >
+                 <DollarSign className="w-3.5 h-3.5" />
+               </button>
+
+               <div className="w-px h-4 bg-border/20 mx-1 shrink-0" />
+
                <button 
                  onClick={(e) => { e.stopPropagation(); onEdit(bet); }}
-                 className="p-2.5 bg-surface/80 text-text-dim hover:text-accent rounded-xl border border-border/50 transition-all hover:scale-105 active:scale-90"
+                 className="p-1.5 text-text-dim hover:text-accent transition-all shrink-0 active:scale-95"
                >
-                 <Pencil className="w-4 h-4" />
+                 <Pencil className="w-3.5 h-3.5" />
                </button>
                <button 
                  onClick={(e) => { e.stopPropagation(); onDelete(bet.id); }}
-                 className="p-2.5 bg-loss/5 text-loss/60 hover:text-loss rounded-xl border border-loss/10 transition-all hover:scale-105 active:scale-90"
+                 className="p-1.5 text-text-dim hover:text-loss transition-all shrink-0 active:scale-95"
                >
-                 <Trash2 className="w-4 h-4" />
+                 <Trash2 className="w-3.5 h-3.5" />
                </button>
              </div>
           </div>
