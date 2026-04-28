@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { cn, formatCurrency, safeNewDate } from '../../lib/utils';
+import { cn, formatCurrency, safeNewDate, getBookmakerStyle } from '../../lib/utils';
 import { Bet, Transaction } from '../../types';
 import { isToday, isYesterday } from 'date-fns';
 import { BOOKMAKER_CONFIGS } from '../../constants';
@@ -20,9 +20,6 @@ interface TrashTabProps {
   permanentlyDeleteTransaction: (id: string) => Promise<void>;
 }
 
-const getBookmakerStyle = (name: string = 'Outra') => {
-  return BOOKMAKER_CONFIGS[name] || BOOKMAKER_CONFIGS['Outra'];
-};
 
 export function TrashTab({
   groupedHistory,

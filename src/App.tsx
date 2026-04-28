@@ -338,10 +338,16 @@ export default function App() {
         const userDoc = await getDoc(userRef);
         
         if (userDoc.exists()) {
-          const cloudKey = userDoc.data().geminiKey;
+          const data = userDoc.data();
+          const cloudKey = data.geminiKey;
           if (cloudKey && cloudKey.length > 20) {
             localStorage.setItem('STAKEWISE_CUSTOM_GEMINI_KEY', cloudKey);
             setManualAiKey(cloudKey);
+          }
+
+          const cloudBookmakers = data.bookmakers;
+          if (cloudBookmakers && Array.isArray(cloudBookmakers)) {
+            setUserBookmakers(cloudBookmakers);
           }
         } else {
           // Initialize user doc if it doesn't exist to avoid permission gaps
@@ -600,18 +606,47 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('STAKEWISE_USER_BOOKMAKERS', JSON.stringify(userBookmakers));
-  }, [userBookmakers]);
+    
+    // Sync to Firestore if logged in
+    if (user) {
+      const saveToCloud = async () => {
+        try {
+          const userRef = doc(db, 'users', user.uid);
+          await updateDoc(userRef, { 
+            bookmakers: userBookmakers,
+            updatedAt: serverTimestamp()
+          });
+        } catch (e: any) {
+          // If document doesn't exist, set it
+          if (e.code === 'not-found') {
+             const userRef = doc(db, 'users', user.uid);
+             await setDoc(userRef, { 
+               bookmakers: userBookmakers,
+               updatedAt: serverTimestamp(),
+               createdAt: serverTimestamp()
+             }, { merge: true });
+          }
+        }
+      };
+      saveToCloud();
+    }
+  }, [userBookmakers, user]);
 
   const [newBookmakerName, setNewBookmakerName] = useState('');
   const [isAddingNewBookmaker, setIsAddingNewBookmaker] = useState(false);
 
   const addBookmaker = () => {
     if (!newBookmakerName.trim()) return;
-    if (userBookmakers.includes(newBookmakerName.trim())) {
-      showToast("Esta casa já existe na lista", "info");
-      return;
-    }
-    setUserBookmakers([...userBookmakers, newBookmakerName.trim()]);
+    const name = newBookmakerName.trim();
+    
+    setUserBookmakers(prev => {
+      if (prev.includes(name)) {
+        showToast("Esta casa já existe na lista", "info");
+        return prev;
+      }
+      return [...prev, name];
+    });
+    
     setNewBookmakerName('');
     setIsAddingNewBookmaker(false);
     showToast("Casa adicionada com sucesso!");
@@ -624,7 +659,7 @@ export default function App() {
         return;
       }
     }
-    setUserBookmakers(userBookmakers.filter(bm => bm !== name));
+    setUserBookmakers(prev => prev.filter(bm => bm !== name));
     showToast("Casa removida da lista ativa.");
   };
 

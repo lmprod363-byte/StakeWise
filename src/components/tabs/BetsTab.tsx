@@ -19,7 +19,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { format, isToday, isYesterday } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { cn, formatCurrency, safeNewDate } from '../../lib/utils';
+import { cn, formatCurrency, safeNewDate, getBookmakerStyle } from '../../lib/utils';
 import { Bet, Bankroll } from '../../types';
 import { PAGE_VARIANTS, TRANSITIONS, STAGGER_CONTAINER, STAGGER_ITEM, BOOKMAKER_CONFIGS } from '../../constants';
 import { HistoryBetRow, HistoryBetCard } from '../HistoryBetItem';
@@ -64,9 +64,6 @@ interface BetsTabProps {
   activeTab: string;
 }
 
-const getBookmakerStyle = (name: string = 'Outra') => {
-  return BOOKMAKER_CONFIGS[name] || BOOKMAKER_CONFIGS['Outra'];
-};
 
 export function BetsTab({
   activeBankrollId,
