@@ -20,6 +20,7 @@ interface BulkConfirmModalProps {
   bets: Bet[];
   userBookmakers: string[];
   addBet: (bet: any, force?: boolean) => Promise<void>;
+  addBulkBets: (betsToAdd: Omit<Bet, 'id' | 'profit'>[]) => Promise<void>;
   isScanning: boolean;
   setIsScanning: (val: boolean) => void;
   showToast: (message: string, type?: 'success' | 'info' | 'loss') => void;
@@ -34,6 +35,7 @@ export function BulkConfirmModal({
   bets,
   userBookmakers,
   addBet,
+  addBulkBets,
   isScanning,
   setIsScanning,
   showToast,
@@ -44,7 +46,7 @@ export function BulkConfirmModal({
   const handleConfirmBulk = async () => {
     setIsScanning(true);
     try {
-      let added = 0;
+      const betsToSave: Omit<Bet, 'id' | 'profit'>[] = [];
       let skipped = 0;
       
       for (const bet of bulkQueue) {
@@ -67,17 +69,18 @@ export function BulkConfirmModal({
         });
 
         if (!isDup) {
-          await addBet(bet, true);
-          added++;
+          betsToSave.push(bet);
         } else {
           skipped++;
         }
       }
       
+      if (betsToSave.length > 0) {
+        await addBulkBets(betsToSave);
+      }
+      
       if (skipped > 0) {
-        showToast(`${added} registradas, ${skipped} duplicadas ignoradas.`, "info");
-      } else {
-        showToast(`${added} apostas registradas com sucesso!`, "success");
+        showToast(`${betsToSave.length} registradas, ${skipped} duplicadas ignoradas.`, "info");
       }
       
       setBulkQueue([]);

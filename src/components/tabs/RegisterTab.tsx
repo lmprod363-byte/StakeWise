@@ -30,6 +30,12 @@ interface RegisterTabProps {
   showToast: (msg: string, type?: 'success' | 'info' | 'loss') => void;
   predefinedMarkets: string[];
   predefinedSelections: string[];
+  isScanning: boolean;
+  scanError: string;
+  processFiles: (files: FileList | File[]) => Promise<void>;
+  bulkProgress: { current: number, total: number } | null;
+  betForm: any;
+  setBetForm: React.Dispatch<React.SetStateAction<any>>;
 }
 
 export function RegisterTab({
@@ -45,27 +51,15 @@ export function RegisterTab({
   setActiveTab,
   showToast,
   predefinedMarkets,
-  predefinedSelections
+  predefinedSelections,
+  isScanning,
+  scanError,
+  processFiles,
+  bulkProgress,
+  betForm,
+  setBetForm
 }: RegisterTabProps) {
-  const [betForm, setBetForm] = useState({
-    date: format(new Date(), "yyyy-MM-dd'T'HH:mm"),
-    sport: 'Futebol',
-    league: '',
-    event: '',
-    market: '',
-    selection: '',
-    odds: '',
-    stake: bankroll.unitSize.toString(),
-    status: 'pending' as Bet['status'],
-    cashoutValue: '',
-    bookmaker: userBookmakers[0] || 'Bet365',
-    betId: '',
-    bankrollId: activeBankrollId || '',
-    isLive: false
-  });
 
-  const [isScanning, setIsScanning] = useState(false);
-  const [scanError, setScanError] = useState('');
   const [isManualBookmaker, setIsManualBookmaker] = useState(false);
 
   // Sync stake when bankroll unit size changes
@@ -74,50 +68,6 @@ export function RegisterTab({
       setBetForm(prev => ({ ...prev, stake: bankroll.unitSize.toString() }));
     }
   }, [bankroll.unitSize, editingBetId, isScanning]);
-
-  const processFiles = async (files: FileList | File[]) => {
-    if (!files.length) return;
-    
-    setIsScanning(true);
-    setScanError('');
-    
-    try {
-      const file = files[0];
-      
-      // Convert file to base64 for Gemini API
-      const reader = new FileReader();
-      const base64Promise = new Promise<string>((resolve) => {
-        reader.onload = (e) => resolve(e.target?.result as string);
-        reader.readAsDataURL(file);
-      });
-      
-      const base64String = await base64Promise;
-      const result = await extractBetFromImage(base64String);
-      
-      if (result) {
-        setBetForm(prev => ({
-          ...prev,
-          date: result.date ? format(safeNewDate(result.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
-          sport: result.sport || prev.sport,
-          league: result.league || prev.league,
-          event: result.event || prev.event,
-          market: result.market || prev.market,
-          selection: result.selection || prev.selection,
-          odds: result.odds?.toString() || prev.odds,
-          stake: result.stake?.toString() || prev.stake,
-          bookmaker: result.bookmaker || prev.bookmaker,
-          isLive: result.isLive ?? prev.isLive
-        }));
-        showToast("Dados extraídos com sucesso!", "success");
-      }
-    } catch (error: any) {
-      console.error("Erro no scanner:", error);
-      setScanError(error.message || "Erro ao analisar imagem");
-      showToast("Erro ao analisar imagem com IA", "loss");
-    } finally {
-      setIsScanning(false);
-    }
-  };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -184,9 +134,11 @@ export function RegisterTab({
                             <Loader2 className="w-10 h-10 text-bg animate-spin" />
                          </div>
                       </div>
-                      <h3 className="text-xl font-black uppercase tracking-tighter mb-2 text-accent">Analisando Print...</h3>
+                      <h3 className="text-xl font-black uppercase tracking-tighter mb-2 text-accent">
+                         {bulkProgress ? `Analisando (${bulkProgress.current}/${bulkProgress.total})...` : 'Analisando Print...'}
+                      </h3>
                       <p className="text-text-dim text-[10px] font-black uppercase tracking-widest animate-pulse">
-                         Aguarde, estamos processando as informações da sua aposta
+                         {bulkProgress ? 'Processando fila de prints' : 'Aguarde, estamos processando as informações da sua aposta'}
                       </p>
                    </div>
                 ) : (
@@ -216,7 +168,9 @@ export function RegisterTab({
                    <div className="absolute inset-0 z-20 bg-bg/40 backdrop-blur-[2px] cursor-wait flex items-center justify-center">
                       <div className="flex flex-col items-center gap-4">
                          <Loader2 className="w-8 h-8 animate-spin text-accent" />
-                         <span className="text-[10px] font-black uppercase tracking-widest text-accent">IA Analisando Rigorosamente...</span>
+                         <span className="text-[10px] font-black uppercase tracking-widest text-accent">
+                            {bulkProgress ? `Processando ${bulkProgress.current} de ${bulkProgress.total}...` : 'IA Analisando Rigorosamente...'}
+                         </span>
                       </div>
                    </div>
                 )}

@@ -129,6 +129,7 @@ import { SortableBankrollItem } from './components/SortableBankrollItem';
 // Tab Components
 import { SettingsTab } from './components/tabs/SettingsTab';
 import { TransfersTab } from './components/tabs/TransfersTab';
+import { BulkConfirmModal } from './components/modals/BulkConfirmModal';
 import { RegisterTab } from './components/tabs/RegisterTab';
 import { InsightsTab } from './components/tabs/InsightsTab';
 import { TrashTab } from './components/tabs/TrashTab';
@@ -141,12 +142,47 @@ import { PREDEFINED_MARKETS, PREDEFINED_SELECTIONS } from './constants';
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [bets, setBets] = useState<Bet[]>([]);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [bankrolls, setBankrolls] = useState<Bankroll[]>([]);
-  const [activeBankrollId, setActiveBankrollId] = useState<string | null>(localStorage.getItem('STAKEWISE_ACTIVE_BANKROLL_ID'));
+  const [allBets, setAllBets] = useState<Bet[]>([]);
+  const [allTransactions, setAllTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [bankrollsLoading, setBankrollsLoading] = useState(true);
+  const [bankrolls, setBankrolls] = useState<Bankroll[]>([]);
+  const [activeBankrollId, setActiveBankrollId] = useState<string | null>(localStorage.getItem('STAKEWISE_ACTIVE_BANKROLL_ID'));
+  const [viewAllBankrolls, setViewAllBankrolls] = useState(false);
+
+  // Auto-select first bankroll if none active
+  useEffect(() => {
+    if (!activeBankrollId && bankrolls.length > 0) {
+      setActiveBankrollId(bankrolls[0].id);
+    }
+  }, [bankrolls, activeBankrollId]);
+
+  const bets = useMemo(() => {
+    return allBets.filter(bet => {
+      if (viewAllBankrolls) return true;
+      const bId = bet.bankrollId || null;
+      const aId = activeBankrollId || null;
+      return bId === aId || (bId === "" && aId === "default") || (bId === "default" && aId === null);
+    });
+  }, [allBets, activeBankrollId, viewAllBankrolls]);
+
+  const transactions = useMemo(() => {
+    return allTransactions.filter(t => {
+      if (viewAllBankrolls) return true;
+      const bId = t.bankrollId || null;
+      const aId = activeBankrollId || null;
+      return bId === aId || (bId === "" && aId === "default") || (bId === "default" && aId === null);
+    });
+  }, [allTransactions, activeBankrollId, viewAllBankrolls]);
+
+  // Sync activeBankrollId to localStorage
+  useEffect(() => {
+    if (activeBankrollId) {
+      localStorage.setItem('STAKEWISE_ACTIVE_BANKROLL_ID', activeBankrollId);
+    } else {
+      localStorage.removeItem('STAKEWISE_ACTIVE_BANKROLL_ID');
+    }
+  }, [activeBankrollId]);
 
   const bankroll = useMemo(() => {
     const found = bankrolls.find(b => b.id === activeBankrollId);
@@ -159,7 +195,6 @@ export default function App() {
   // Isso evitava mudanças se o banco escolhido não estivesse carregado no momento exato.
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'bets' | 'register' | 'insights' | 'settings' | 'trash' | 'transfers' | 'stake'>('dashboard');
-  const [viewAllBankrolls, setViewAllBankrolls] = useState(false);
   const [timeRange, setTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('all');
   const [editingBetId, setEditingBetId] = useState<string | null>(null);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -411,10 +446,11 @@ export default function App() {
     return () => unsubscribeBankrolls();
   }, [user]);
 
-  // Effect 2: Sync Bets (Depends on Bankrolls and Active ID)
+  // Effect 2: Sync All Bets & Transactions (Independent of switching bankroll for speed)
   useEffect(() => {
     if (!user) {
-      setBets([]);
+      setAllBets([]);
+      setAllTransactions([]);
       setLoading(false);
       return;
     }
@@ -433,12 +469,11 @@ export default function App() {
         id: doc.id
       })) as Bet[];
 
-      // De-duplicate bets by ID before processing
       const uniqueBetsMap = new Map();
       dbBets.forEach(bet => uniqueBetsMap.set(bet.id, bet));
       const allBets = Array.from(uniqueBetsMap.values());
 
-      // Migration check: Assign bankrollId to bets that don't have one (legacy ONLY)
+      // Migration check
       if (bankrolls.length > 0) {
         const legacyBets = allBets.filter(b => !b.bankrollId || b.bankrollId === "");
         if (legacyBets.length > 0) {
@@ -453,12 +488,7 @@ export default function App() {
         }
       }
 
-      const filtered = allBets.filter(bet => {
-        if (viewAllBankrolls) return true;
-        return bet.bankrollId === activeBankrollId;
-      });
-
-      setBets(filtered);
+      setAllBets(allBets);
       setLoading(false);
     });
 
@@ -474,23 +504,18 @@ export default function App() {
         id: doc.id
       })) as Transaction[];
 
-      // De-duplicate transactions
       const uniqueTransactionsMap = new Map();
       dbTransactions.forEach(t => uniqueTransactionsMap.set(t.id, t));
       const list = Array.from(uniqueTransactionsMap.values());
 
-      const filtered = list.filter(t => {
-        if (viewAllBankrolls) return true;
-        return t.bankrollId === activeBankrollId;
-      });
-      setTransactions(filtered);
+      setAllTransactions(list);
     });
 
     return () => {
       unsubscribeBets();
       unsubscribeTransactions();
     };
-  }, [user, activeBankrollId, bankrolls]);
+  }, [user, bankrolls.length]);
 
   const saveLocalSettings = () => {
     const total = parseFloat(localTotal) || bankroll.total || 0;
@@ -554,6 +579,18 @@ export default function App() {
     bankrollId: activeBankrollId || '',
     isLive: false
   });
+
+  // Keep betForm in sync with switching bankroll
+  useEffect(() => {
+    if (!editingBetId) {
+      setBetForm(prev => ({
+        ...prev,
+        bankrollId: activeBankrollId || '',
+        stake: bankroll.unitSize.toString()
+      }));
+    }
+  }, [activeBankrollId, bankroll.unitSize, editingBetId]);
+
 
   const DEFAULT_BOOKMAKERS = ['Bet365', 'SuperBet', 'Betano', 'EsportivaBet'];
   const [userBookmakers, setUserBookmakers] = useState<string[]>(() => {
@@ -689,81 +726,87 @@ export default function App() {
       const newBetsQueue: Omit<Bet, 'id' | 'profit'>[] = [];
 
       for (let i = 0; i < fileArray.length; i++) {
-        const file = fileArray[i];
-        if (isMultiple) {
-          setBulkProgress({ current: i + 1, total: fileArray.length });
-        }
+        try {
+          const file = fileArray[i];
+          if (isMultiple) {
+            setBulkProgress({ current: i + 1, total: fileArray.length });
+          }
 
-        const base64 = await compressImage(file);
-        // Since compressImage returns image/jpeg for standardized compression
-        const data = await extractBetFromImage(base64, 'image/jpeg');
+          const base64 = await compressImage(file);
+          const data = await extractBetFromImage(base64, 'image/jpeg');
 
-        const sanitizedLeague = data.league && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.league.toLowerCase().trim()) ? data.league : '';
-        const sanitizedBetId = data.betId && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.betId.toLowerCase().trim()) ? data.betId : '';
+          if (!data) continue;
 
-        const combinedMarket = [data.market, data.selection].filter(Boolean).join(' • ');
+          const sanitizedLeague = data.league && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.league.toLowerCase().trim()) ? data.league : '';
+          const sanitizedBetId = data.betId && !['n/a', 'indefinido', 'desconhecido', 'unknown', 'não encontrado', 'not found'].includes(data.betId.toLowerCase().trim()) ? data.betId : '';
 
-        const betData = {
-          userId: user?.uid || '',
-          bankrollId: activeBankrollId || '',
-          date: data.date ? safeNewDate(data.date).toISOString() : new Date().toISOString(),
-          sport: data.sport || 'Futebol',
-          league: sanitizedLeague,
-          event: data.event || '',
-          market: data.market || combinedMarket,
-          selection: data.selection || '',
-          odds: data.odds || 0,
-          stake: data.stake || bankroll.unitSize,
-          status: (data.status || 'pending') as Bet['status'],
-          bookmaker: data.bookmaker || 'Bet365',
-          betId: sanitizedBetId,
-          isLive: data.isLive || false,
-          cashoutValue: data.cashoutValue || null,
-          deleted: false,
-          createdAt: new Date().toISOString()
-        };
+          const combinedMarket = [data.market, data.selection].filter(Boolean).join(' • ');
 
-        const finalProfit = calculateProfit(betData.stake, betData.odds, betData.status, betData.cashoutValue || undefined);
-        const betToSave = { ...betData, profit: finalProfit };
+          const betData = {
+            userId: user?.uid || '',
+            bankrollId: activeBankrollId || '',
+            date: data.date ? safeNewDate(data.date).toISOString() : new Date().toISOString(),
+            sport: data.sport || 'Futebol',
+            league: sanitizedLeague,
+            event: data.event || '',
+            market: data.market || combinedMarket,
+            selection: data.selection || '',
+            odds: data.odds || 0,
+            stake: data.stake || bankroll.unitSize,
+            status: (data.status || 'pending') as Bet['status'],
+            bookmaker: data.bookmaker || 'Bet365',
+            betId: sanitizedBetId,
+            isLive: data.isLive || false,
+            cashoutValue: data.cashoutValue || null,
+            deleted: false,
+            createdAt: new Date().toISOString()
+          };
 
-        // Pre-check for exact duplicates...
-        const isDuplicateInState = bets.some(b => 
-           !b.deleted && 
-           b.date === betToSave.date && 
-           b.event.toLowerCase() === betToSave.event.toLowerCase() && 
-           b.market.toLowerCase() === betToSave.market.toLowerCase() &&
-           Math.abs(b.odds - betToSave.odds) < 0.0001
-        );
-        const isDuplicateInQueue = newBetsQueue.some(b => 
-           b.date === betToSave.date && 
-           b.event.toLowerCase() === betToSave.event.toLowerCase() && 
-           b.market.toLowerCase() === betToSave.market.toLowerCase() &&
-           Math.abs(b.odds - betToSave.odds) < 0.0001
-        );
+          const finalProfit = calculateProfit(betData.stake, betData.odds, betData.status, betData.cashoutValue || undefined);
+          const betToSave = { ...betData, profit: finalProfit };
 
-        if (isDuplicateInState || isDuplicateInQueue) {
-           console.warn("Skipping duplicate bet in bulk scan batch");
-        } else {
-           if (isMultiple) {
-             newBetsQueue.push(betToSave);
-           } else {
-             setBetForm(prev => ({
-               ...prev,
-               date: data.date ? format(safeNewDate(data.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
-               sport: betToSave.sport,
-               league: betToSave.league,
-               event: betToSave.event,
-               market: betToSave.market,
-               selection: betToSave.selection,
-               odds: betToSave.odds.toString(),
-               stake: betToSave.stake.toString(),
-               status: betToSave.status,
-               bookmaker: betToSave.bookmaker,
-               betId: betToSave.betId,
-               isLive: betToSave.isLive,
-               cashoutValue: betToSave.cashoutValue?.toString() || ''
-             }));
-           }
+          // Pre-check for exact duplicates
+          const isDuplicateInState = bets.some(b => 
+             !b.deleted && 
+             b.date === betToSave.date && 
+             b.event.toLowerCase() === betToSave.event.toLowerCase() && 
+             b.market.toLowerCase() === betToSave.market.toLowerCase() &&
+             Math.abs(b.odds - betToSave.odds) < 0.0001
+          );
+          const isDuplicateInQueue = newBetsQueue.some(b => 
+             b.date === betToSave.date && 
+             b.event.toLowerCase() === betToSave.event.toLowerCase() && 
+             b.market.toLowerCase() === betToSave.market.toLowerCase() &&
+             Math.abs(b.odds - betToSave.odds) < 0.0001
+          );
+
+          if (isDuplicateInState || isDuplicateInQueue) {
+             console.warn("Skipping duplicate bet in bulk scan batch");
+          } else {
+             if (isMultiple) {
+               newBetsQueue.push(betToSave);
+             } else {
+               setBetForm(prev => ({
+                 ...prev,
+                 date: data.date ? format(safeNewDate(data.date), "yyyy-MM-dd'T'HH:mm") : prev.date,
+                 sport: betToSave.sport,
+                 league: betToSave.league,
+                 event: betToSave.event,
+                 market: betToSave.market,
+                 selection: betToSave.selection,
+                 odds: betToSave.odds.toString(),
+                 stake: betToSave.stake.toString(),
+                 status: betToSave.status,
+                 bookmaker: betToSave.bookmaker,
+                 betId: betToSave.betId,
+                 isLive: betToSave.isLive,
+                 cashoutValue: betToSave.cashoutValue?.toString() || ''
+               }));
+             }
+          }
+        } catch (itemError) {
+          console.error("Error processing single file:", itemError);
+          // Continue with next file
         }
       }
       
@@ -1184,6 +1227,39 @@ export default function App() {
     } catch (error) {
       console.error("Erro ao salvar aposta:", error);
       showToast("Erro ao salvar aposta.", "info");
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  const addBulkBets = async (betsToAdd: Omit<Bet, 'id' | 'profit'>[]) => {
+    if (!user || betsToAdd.length === 0) return;
+    setIsRegistering(true);
+    try {
+      const batch = writeBatch(db);
+      for (const betData of betsToAdd) {
+        const stakeNum = Number(betData.stake);
+        const oddsNum = Number(betData.odds);
+        const cashoutNum = betData.cashoutValue ? Number(betData.cashoutValue) : undefined;
+        const profit = calculateProfit(stakeNum, oddsNum, betData.status, cashoutNum);
+
+        const docRef = doc(collection(db, 'bets'));
+        batch.set(docRef, {
+          ...betData,
+          userId: user.uid,
+          bankrollId: betData.bankrollId || activeBankrollId,
+          profit,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          deleted: false
+        });
+      }
+      await batch.commit();
+      setBulkQueue([]);
+      showToast(`${betsToAdd.length} apostas registradas com sucesso!`);
+    } catch (error) {
+      console.error("Erro ao salvar apostas em massa:", error);
+      showToast("Erro ao registrar apostas em lote.", "info");
     } finally {
       setIsRegistering(false);
     }
@@ -1626,7 +1702,7 @@ export default function App() {
     
     // Set syncing state for visual feedback
     setSyncingBetId(id);
-    setBets(optimisticBets);
+    setAllBets(optimisticBets);
 
     try {
       const data: any = {
@@ -2159,8 +2235,16 @@ export default function App() {
             showToast={showToast}
             predefinedMarkets={PREDEFINED_MARKETS}
             predefinedSelections={PREDEFINED_SELECTIONS}
+            isScanning={isScanning}
+            scanError={scanError}
+            processFiles={processFiles}
+            bulkProgress={bulkProgress}
+            betForm={betForm}
+            setBetForm={setBetForm}
           />
+
         )}
+
 
         {activeTab === 'insights' && (
           <InsightsTab 
@@ -2248,6 +2332,7 @@ export default function App() {
         setBulkQueue={setBulkQueue}
         userBookmakers={userBookmakers}
         addBet={addBet}
+        addBulkBets={addBulkBets}
         isScanning={isScanning}
         setIsScanning={setIsScanning}
         showToast={showToast}
@@ -2311,6 +2396,7 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
     </AppShell>
   )
 }

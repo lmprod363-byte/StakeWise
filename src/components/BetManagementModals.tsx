@@ -19,6 +19,7 @@ interface BetManagementModalsProps {
   setBulkQueue: (v: any[]) => void;
   userBookmakers: string[];
   addBet: any;
+  addBulkBets: (bets: any[]) => Promise<void>;
   isScanning: boolean;
   setIsScanning: (v: boolean) => void;
   showToast: (m: string, t?: any) => void;
@@ -52,6 +53,7 @@ export function BetManagementModals({
   setBulkQueue,
   userBookmakers,
   addBet,
+  addBulkBets,
   isScanning,
   setIsScanning,
   showToast,
@@ -100,6 +102,7 @@ export function BetManagementModals({
             bets={bets}
             userBookmakers={userBookmakers}
             addBet={addBet}
+            addBulkBets={addBulkBets}
             isScanning={isScanning}
             setIsScanning={setIsScanning}
             showToast={showToast}
